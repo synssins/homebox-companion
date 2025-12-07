@@ -34,6 +34,7 @@ All environment variables use the `HBC_` prefix (short for Homebox Companion):
 | `HBC_SERVER_HOST` | No | `0.0.0.0` | Server bind address |
 | `HBC_SERVER_PORT` | No | `8000` | Server port (serves both API and frontend in production) |
 | `HBC_LOG_LEVEL` | No | `INFO` | Logging level |
+| `HBC_DISABLE_UPDATE_CHECK` | No | `false` | Disable GitHub update notifications |
 
 ---
 
