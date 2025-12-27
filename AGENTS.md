@@ -90,4 +90,4 @@ Demo credentials: `demo@example.com` / `demo`
 - **Frontend**: Don't modify workflow state directly; use service methods
 - **Backend**: Extended fields (manufacturer, model, serial) require PUT after create
 - **AI**: Customizations replace defaults—don't concatenate instructions
-- **AI**: Single item mode forces quantity=1
+
