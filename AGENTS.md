@@ -82,6 +82,7 @@ Demo credentials: `demo@example.com` / `demo`
 2. `uv run ty check`
 3. `uv run vulture --min-confidence 70 --sort-by-size`
 4. `cd frontend && npm run check`
+5. `cd frontend && npx svelte-check --tsconfig ./tsconfig.json`
 
 ---
 
