@@ -49,7 +49,7 @@ Build the frontend and run the server locally:
 ```powershell
 # 1. Build frontend (from frontend/ directory)
 cd frontend
-npm ci
+npm install
 npm run build
 
 # 2. Copy build to server static files
