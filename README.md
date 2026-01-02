@@ -25,7 +25,7 @@ Take a photo of your stuff, and let AI identify and catalog items directly into 
     <img src=".github/assets/images/demo_button.png" alt="Try Live Demo" width="280">
   </a>
   <br>
-  <sub><i>View results in the <a href="https://demo.hb.duelion.com/">Homebox demo instance</a></i></sub>
+ <!-- <sub><i>View results in the <a href="https://demo.hb.duelion.com/">Homebox demo instance</a></i></sub> -->
 </div>
 
 ## 🔄 How It Works
