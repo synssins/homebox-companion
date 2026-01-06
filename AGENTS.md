@@ -33,8 +33,35 @@ uv run pytest -m live         # Live tests (real services)
 # Frontend (in frontend/ directory)
 npm install
 npm run dev
-npm run check            # TypeScript validation
+npm run check            # TypeScript/Svelte validation
+npm run lint             # ESLint (Svelte + Tailwind)
+npm run lint:fix         # ESLint with auto-fix
+npm run format:check     # Prettier format check
+npm run format           # Prettier auto-format
 ```
+
+---
+
+## Build & Run Full App
+
+Build the frontend and run the server locally:
+
+```powershell
+# 1. Build frontend (from frontend/ directory)
+cd frontend
+npm install
+npm run build
+
+# 2. Copy build to server static files
+Remove-Item -Recurse -Force ../server/static/*
+Copy-Item -Recurse -Force build/* ../server/static/
+
+# 3. Run the server (from project root)
+cd ..
+uv run python -m server.app
+```
+
+The app will be available at `http://localhost:8000`.
 
 ---
 
@@ -74,6 +101,23 @@ Demo credentials: `demo@example.com` / `demo`
 - **Field Preferences**: Three-layer override (hardcoded → env vars → config file)
 - **Item creation**: Two-step POST (create) → PUT (extended fields) due to Homebox API
 
+### Frontend Design System
+
+Design tokens are defined in `tailwind.config.js`. **Always use tokens instead of raw values** to maintain consistency.
+
+| Category | ✅ Use This | ❌ Avoid |
+|----------|-------------|----------|
+| **Overlays** | `bg-neutral-950/60` | `bg-black/60` |
+| **Text on dark** | `text-neutral-100`, `text-neutral-300` | `text-white`, `text-white/80` |
+| **Semantic colors** | `warning-*`, `success-*`, `error-*` | `amber-*`, `yellow-*`, `red-*` |
+| **Accent color** | `text-accent`, `text-primary-400` | `text-cyan-400`, `text-blue-400` |
+| **Typography** | `text-body-sm`, `text-caption` | `text-sm`, `text-xs` |
+| **Touch targets** | `min-h-touch`, `min-w-touch` | `min-h-[44px]`, `min-w-[44px]` |
+
+**Canvas operations**: Use `CANVAS_COLORS` from `lib/utils/canvas-colors.ts` (synced with Tailwind tokens).
+
+**CSS custom values**: In component `<style>` blocks, use `theme('colors.primary.500')` instead of hard-coded hex values.
+
 ---
 
 ## Pre-Commit Checklist
@@ -81,14 +125,17 @@ Demo credentials: `demo@example.com` / `demo`
 1. `uv run ruff check .`
 2. `uv run ty check`
 3. `uv run vulture --min-confidence 70 --sort-by-size`
-4. `cd frontend && npm run check`
-5. `cd frontend && npx svelte-check --tsconfig ./tsconfig.json`
+4. `npm run check`
+5. `cd frontend`
+6. `npm run lint`
+7. `npm run format:check`
 
 ---
 
 ## Common Pitfalls
 
 - **Frontend**: Don't modify workflow state directly; use service methods
+- **Frontend**: Use design system tokens (see table above), not raw Tailwind colors
 - **Backend**: Extended fields (manufacturer, model, serial) require PUT after create
 - **AI**: Customizations replace defaults—don't concatenate instructions
 

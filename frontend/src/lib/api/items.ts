@@ -4,7 +4,15 @@
 
 import { request, requestFormData, requestBlobUrl, type BlobUrlResult } from './client';
 import { apiLogger as log } from '../utils/logger';
-import type { BatchCreateRequest, BatchCreateResponse, ItemSummary } from '../types';
+import type {
+	BatchCreateRequest,
+	BatchCreateResponse,
+	DuplicateCheckRequest,
+	DuplicateCheckResponse,
+	DuplicateIndexStatus,
+	DuplicateIndexRebuildResponse,
+	ItemSummary,
+} from '../types';
 
 export type { BlobUrlResult };
 
@@ -33,27 +41,32 @@ export const items = {
 		if (file.size === 0) {
 			log.warn(`Empty file being uploaded to item ${itemId}: ${file.name}`);
 		} else if (file.size < 1000) {
-			log.warn(`Suspiciously small file being uploaded to item ${itemId}: ${file.name} (${file.size} bytes)`);
+			log.warn(
+				`Suspiciously small file being uploaded to item ${itemId}: ${file.name} (${file.size} bytes)`
+			);
 		}
 
 		const formData = new FormData();
 		formData.append('file', file);
-		return requestFormData<unknown>(
-			`/items/${itemId}/attachments`,
-			formData,
-			{ errorMessage: 'Failed to upload attachment', signal: options.signal }
-		);
+		return requestFormData<unknown>(`/items/${itemId}/attachments`, formData, {
+			errorMessage: 'Failed to upload attachment',
+			signal: options.signal,
+		});
 	},
 
 	/**
 	 * Fetch a thumbnail image and return a blob URL with cleanup function.
-	 * 
+	 *
 	 * IMPORTANT: Call `result.revoke()` when done to avoid memory leaks.
-	 * 
+	 *
 	 * @throws {ApiError} When the server returns a non-OK response (e.g., 404 for missing thumbnail)
 	 * @throws {NetworkError} When a network-level error occurs (connection, DNS, timeout)
 	 */
-	getThumbnail: (itemId: string, attachmentId: string, signal?: AbortSignal): Promise<BlobUrlResult> =>
+	getThumbnail: (
+		itemId: string,
+		attachmentId: string,
+		signal?: AbortSignal
+	): Promise<BlobUrlResult> =>
 		requestBlobUrl(`/items/${itemId}/attachments/${attachmentId}`, signal),
 
 	/**
@@ -67,5 +80,45 @@ export const items = {
 			signal,
 		});
 	},
-};
 
+	/**
+	 * Check items for potential duplicates by serial number.
+	 *
+	 * Compares serial numbers of the provided items against existing items
+	 * in Homebox. Items with matching serial numbers are flagged as potential
+	 * duplicates.
+	 *
+	 * Use this before creating items to warn users about possible duplicates.
+	 */
+	checkDuplicates: (data: DuplicateCheckRequest, signal?: AbortSignal) => {
+		const itemsWithSerial = data.items.filter((item) => item.serial_number).length;
+		log.debug(`Checking ${data.items.length} items for duplicates (${itemsWithSerial} with serials)`);
+		return request<DuplicateCheckResponse>('/items/check-duplicates', {
+			method: 'POST',
+			body: JSON.stringify(data),
+			signal,
+		});
+	},
+
+	/**
+	 * Get the current status of the duplicate detection index.
+	 */
+	getDuplicateIndexStatus: (signal?: AbortSignal) => {
+		log.debug('Fetching duplicate index status');
+		return request<DuplicateIndexStatus>('/items/duplicate-index/status', { signal });
+	},
+
+	/**
+	 * Rebuild the duplicate detection index from scratch.
+	 *
+	 * This fetches ALL items from Homebox and rebuilds the serial number index.
+	 * For large inventories, this may take several seconds.
+	 */
+	rebuildDuplicateIndex: (signal?: AbortSignal) => {
+		log.info('Triggering duplicate index rebuild');
+		return request<DuplicateIndexRebuildResponse>('/items/duplicate-index/rebuild', {
+			method: 'POST',
+			signal,
+		});
+	},
+};

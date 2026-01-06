@@ -22,14 +22,14 @@
 	}
 </script>
 
-<div class="border-t border-border pt-4">
+<div class="border-t border-neutral-700 pt-4">
 	<button
 		type="button"
-		class="flex items-center gap-2 text-sm text-text-muted hover:text-text w-full"
+		class="flex w-full items-center gap-2 text-sm text-neutral-400 hover:text-neutral-200"
 		onclick={onToggle}
 	>
 		<svg
-			class="w-4 h-4 transition-transform {expanded ? 'rotate-180' : ''}"
+			class="h-4 w-4 transition-transform {expanded ? 'rotate-180' : ''}"
 			fill="none"
 			stroke="currentColor"
 			viewBox="0 0 24 24"
@@ -42,13 +42,9 @@
 	{#if expanded}
 		<div class="mt-3 space-y-3" transition:slide={{ duration: 200 }}>
 			{#if loading}
-				<AnalysisProgressBar
-					current={0}
-					total={1}
-					message="Correcting with AI..."
-				/>
+				<AnalysisProgressBar current={0} total={1} message="Correcting with AI..." />
 			{:else}
-				<p class="text-xs text-text-dim">
+				<p class="text-xs text-neutral-500">
 					Tell the AI what's wrong and it will re-analyze the image
 				</p>
 				<textarea
@@ -64,7 +60,7 @@
 					{loading}
 					disabled={loading || !correctionPrompt.trim()}
 				>
-					<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+					<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 						<path d="M12 2a10 10 0 1 0 10 10H12V2z" />
 						<path d="M12 2a10 10 0 0 1 10 10" />
 					</svg>
@@ -74,8 +70,3 @@
 		</div>
 	{/if}
 </div>
-
-
-
-
-

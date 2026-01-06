@@ -19,6 +19,7 @@ import { CaptureService } from './capture.svelte';
 import { AnalysisService } from './analysis.svelte';
 import { ReviewService } from './review.svelte';
 import { SubmissionService } from './submission.svelte';
+import { items } from '$lib/api/items';
 import type {
 	ScanState,
 	ScanStatus,
@@ -26,7 +27,8 @@ import type {
 	ReviewItem,
 	ConfirmedItem,
 	Progress,
-	SubmissionResult
+	SubmissionResult,
+	DuplicateMatch
 } from '$lib/types';
 
 // =============================================================================
@@ -68,6 +70,9 @@ class ScanWorkflow {
 	/** Current error message */
 	private _error = $state<string | null>(null);
 
+	/** Potential duplicates detected during review */
+	private _duplicateMatches = $state<DuplicateMatch[]>([]);
+
 	// =========================================================================
 	// UNIFIED STATE ACCESSOR (for backward compatibility)
 	// =========================================================================
@@ -93,12 +98,13 @@ class ScanWorkflow {
 		'imageStatuses',
 		'detectedItems',
 		'currentReviewIndex',
+		'duplicateMatches',
 		'confirmedItems',
 		'submissionProgress',
 		'itemStatuses',
 		'lastSubmissionResult',
 		'submissionErrors',
-		'error'
+		'error',
 	]);
 
 	/** Writable state properties */
@@ -110,13 +116,13 @@ class ScanWorkflow {
 		'parentItemId',
 		'parentItemName',
 		'error',
-		'analysisProgress'
+		'analysisProgress',
 	]);
 
 	/**
 	 * Unified state object for backward compatibility with existing pages.
 	 * Returns a Proxy that intercepts property assignments.
-	 * 
+	 *
 	 * IMPORTANT: This proxy throws errors for unknown property access to surface bugs.
 	 * - Reading unknown properties throws TypeError
 	 * - Writing to read-only properties throws TypeError
@@ -125,6 +131,7 @@ class ScanWorkflow {
 	get state(): ScanState {
 		// Create proxy once and reuse (the proxy handlers access live service state)
 		if (!this._stateProxy) {
+			// eslint-disable-next-line @typescript-eslint/no-this-alias -- Required for closure in Proxy handlers
 			const workflow = this;
 			this._stateProxy = new Proxy({} as ScanState, {
 				get(_target, prop: string | symbol) {
@@ -139,7 +146,7 @@ class ScanWorkflow {
 					if (!ScanWorkflow.READABLE_PROPS.has(propName)) {
 						throw new TypeError(
 							`Cannot read unknown workflow state property: '${prop}'. ` +
-							`Valid properties are: ${[...ScanWorkflow.READABLE_PROPS].join(', ')}`
+								`Valid properties are: ${[...ScanWorkflow.READABLE_PROPS].join(', ')}`
 						);
 					}
 
@@ -166,6 +173,8 @@ class ScanWorkflow {
 							return workflow.reviewService.detectedItems;
 						case 'currentReviewIndex':
 							return workflow.reviewService.currentReviewIndex;
+						case 'duplicateMatches':
+							return workflow._duplicateMatches;
 						case 'confirmedItems':
 							return workflow.reviewService.confirmedItems;
 						case 'submissionProgress':
@@ -178,10 +187,11 @@ class ScanWorkflow {
 							return workflow.submissionService.lastErrors;
 						case 'error':
 							return workflow._error;
-						default:
+						default: {
 							// TypeScript exhaustiveness check - should never reach here
 							const _exhaustive: never = propName;
 							throw new TypeError(`Unhandled property: ${_exhaustive}`);
+						}
 					}
 				},
 				set(_target, prop: string | symbol, value) {
@@ -196,7 +206,7 @@ class ScanWorkflow {
 					if (!ScanWorkflow.READABLE_PROPS.has(propName)) {
 						throw new TypeError(
 							`Cannot set unknown workflow state property: '${prop}'. ` +
-							`Valid properties are: ${[...ScanWorkflow.READABLE_PROPS].join(', ')}`
+								`Valid properties are: ${[...ScanWorkflow.READABLE_PROPS].join(', ')}`
 						);
 					}
 
@@ -204,8 +214,8 @@ class ScanWorkflow {
 					if (!ScanWorkflow.WRITABLE_PROPS.has(propName)) {
 						throw new TypeError(
 							`Cannot set read-only workflow state property: '${prop}'. ` +
-							`This property can only be modified through workflow methods. ` +
-							`Writable properties are: ${[...ScanWorkflow.WRITABLE_PROPS].join(', ')}`
+								`This property can only be modified through workflow methods. ` +
+								`Writable properties are: ${[...ScanWorkflow.WRITABLE_PROPS].join(', ')}`
 						);
 					}
 
@@ -250,15 +260,18 @@ class ScanWorkflow {
 					return [...ScanWorkflow.READABLE_PROPS];
 				},
 				getOwnPropertyDescriptor(_target, prop: string | symbol) {
-					if (typeof prop === 'symbol' || !ScanWorkflow.READABLE_PROPS.has(prop as keyof ScanState)) {
+					if (
+						typeof prop === 'symbol' ||
+						!ScanWorkflow.READABLE_PROPS.has(prop as keyof ScanState)
+					) {
 						return undefined;
 					}
 					return {
 						enumerable: true,
 						configurable: true,
-						writable: ScanWorkflow.WRITABLE_PROPS.has(prop as keyof ScanState)
+						writable: ScanWorkflow.WRITABLE_PROPS.has(prop as keyof ScanState),
 					};
-				}
+				},
 			});
 		}
 		return this._stateProxy;
@@ -379,19 +392,72 @@ class ScanWorkflow {
 
 		if (result.success) {
 			this.reviewService.setDetectedItems(result.items);
-			
+
+			// Check for potential duplicates (async, non-blocking)
+			this.checkForDuplicates(result.items);
+
 			// Check if there were partial failures
 			if (result.failedCount > 0) {
 				this._status = 'partial_analysis';
-				log.warn(`Analysis complete with partial failures: ${result.items.length} items detected, ${result.failedCount} image(s) failed`);
+				log.warn(
+					`Analysis complete with partial failures: ${result.items.length} items detected, ${result.failedCount} image(s) failed`
+				);
 			} else {
 				this._status = 'reviewing';
-				log.info(`Analysis complete! Detected ${result.items.length} item(s), transitioning to review`);
+				log.info(
+					`Analysis complete! Detected ${result.items.length} item(s), transitioning to review`
+				);
 			}
 		} else {
 			this._error = result.error || 'Analysis failed';
 			this._status = 'capturing';
 			log.error(`Analysis failed: ${this._error}, returning to capture mode`);
+		}
+	}
+
+	/**
+	 * Check detected items for potential duplicates against existing items in Homebox.
+	 * This is called asynchronously and non-blocking - the UI will update when results arrive.
+	 */
+	private async checkForDuplicates(detectedItems: ReviewItem[]): Promise<void> {
+		// Clear previous duplicate matches
+		this._duplicateMatches = [];
+
+		// Filter items that have serial numbers (only those can be checked)
+		const itemsWithSerials = detectedItems.filter(item => item.serial_number);
+		if (itemsWithSerials.length === 0) {
+			log.debug('No items with serial numbers to check for duplicates');
+			return;
+		}
+
+		log.info(`Checking ${itemsWithSerials.length} item(s) for potential duplicates`);
+
+		try {
+			// Convert to the format expected by the API
+			const itemsToCheck = detectedItems.map(item => ({
+				name: item.name,
+				quantity: item.quantity,
+				description: item.description,
+				serial_number: item.serial_number,
+				model_number: item.model_number,
+				manufacturer: item.manufacturer,
+				purchase_price: item.purchase_price,
+				purchase_from: item.purchase_from,
+				notes: item.notes,
+				label_ids: item.label_ids,
+			}));
+
+			const response = await items.checkDuplicates({ items: itemsToCheck });
+
+			if (response.duplicates.length > 0) {
+				this._duplicateMatches = response.duplicates;
+				log.warn(`Found ${response.duplicates.length} potential duplicate(s)`);
+			} else {
+				log.debug('No duplicates found');
+			}
+		} catch (error) {
+			// Non-fatal - log but don't disrupt the workflow
+			log.error('Failed to check for duplicates:', error);
 		}
 	}
 
@@ -433,14 +499,18 @@ class ScanWorkflow {
 
 		if (result.success) {
 			this.reviewService.setDetectedItems(result.items);
-			
+
 			// Check if there are still failures
 			if (result.failedCount > 0) {
 				this._status = 'partial_analysis';
-				log.warn(`Retry complete with remaining failures: ${result.items.length} total items, ${result.failedCount} image(s) still failed`);
+				log.warn(
+					`Retry complete with remaining failures: ${result.items.length} total items, ${result.failedCount} image(s) still failed`
+				);
 			} else {
 				this._status = 'reviewing';
-				log.info(`Retry complete! All images successfully analyzed, ${result.items.length} total item(s)`);
+				log.info(
+					`Retry complete! All images successfully analyzed, ${result.items.length} total item(s)`
+				);
 			}
 		} else {
 			// If retry completely failed, go back to partial_analysis state
@@ -502,16 +572,16 @@ class ScanWorkflow {
 
 		// Re-index imageStatuses to match new image array positions
 		const oldStatuses = this.analysisService.imageStatuses;
-		const newStatuses: Record<number, typeof oldStatuses[number]> = {};
-		
+		const newStatuses: Record<number, (typeof oldStatuses)[number]> = {};
+
 		// Build mapping: for each old index, calculate new index after removals
 		const sortedRemovedIndices = [...failedIndices].sort((a, b) => a - b);
 		for (const [oldIndexStr, status] of Object.entries(oldStatuses)) {
 			const oldIndex = parseInt(oldIndexStr, 10);
-			
+
 			// Skip failed indices (they're being removed)
 			if (sortedRemovedIndices.includes(oldIndex)) continue;
-			
+
 			// Calculate new index: subtract count of removed indices below this one
 			let newIndex = oldIndex;
 			for (const removed of sortedRemovedIndices) {
@@ -540,6 +610,11 @@ class ScanWorkflow {
 			}
 			this.analysisService.clearProgress();
 		}
+	}
+
+	/** Clear analysis progress (called when animation completes) */
+	clearAnalysisProgress(): void {
+		this.analysisService.clearProgress();
 	}
 
 	/** Check if analysis is in progress */
@@ -573,12 +648,19 @@ class ScanWorkflow {
 
 	/** Skip current item and move to next */
 	skipItem(): void {
+		console.log('[SCAN] skipItem called, currentIndex:', this.reviewService.currentReviewIndex);
+		console.log('[SCAN] detectedItems.length:', this.reviewService.detectedItems.length);
+		console.log('[SCAN] confirmedItems.length:', this.reviewService.confirmedItems.length);
 		const result = this.reviewService.skipCurrentItem();
+		console.log('[SCAN] skipCurrentItem result:', result);
 		if (result === 'empty') {
+			console.log('[SCAN] All items skipped, calling backToCapture');
 			this.backToCapture();
 		} else if (result === 'complete') {
+			console.log('[SCAN] Review complete, calling finishReview');
 			this.finishReview();
 		}
+		console.log('[SCAN] After skip, status:', this._status);
 	}
 
 	/** Confirm current item and move to next */
@@ -598,15 +680,19 @@ class ScanWorkflow {
 
 	/** Finish review and move to confirmation */
 	finishReview(): void {
+		console.log('[SCAN] finishReview called, hasConfirmedItems:', this.reviewService.hasConfirmedItems);
 		if (!this.reviewService.hasConfirmedItems) {
 			this._error = 'Please confirm at least one item';
+			console.log('[SCAN] No confirmed items, setting error');
 			return;
 		}
+		console.log('[SCAN] Setting status to confirming');
 		this._status = 'confirming';
 	}
 
 	/** Return to capture mode from review */
 	backToCapture(): void {
+		console.log('[SCAN] backToCapture called, setting status to capturing');
 		this._status = 'capturing';
 		this.reviewService.reset();
 		this._error = null;
@@ -657,14 +743,19 @@ class ScanWorkflow {
 				successCount: 0,
 				partialSuccessCount: 0,
 				failCount: 0,
-				sessionExpired: false
+				sessionExpired: false,
 			};
 		}
 
 		this._status = 'submitting';
 		this._error = null;
 
-		const result = await this.submissionService.submitAll(items, this._locationId, this._parentItemId, options);
+		const result = await this.submissionService.submitAll(
+			items,
+			this._locationId,
+			this._parentItemId,
+			options
+		);
 
 		if (result.sessionExpired) {
 			return result;
@@ -708,13 +799,17 @@ class ScanWorkflow {
 				successCount: 0,
 				partialSuccessCount: 0,
 				failCount: 0,
-				sessionExpired: false
+				sessionExpired: false,
 			};
 		}
 
 		this._error = null;
 
-		const result = await this.submissionService.retryFailed(items, this._locationId, this._parentItemId);
+		const result = await this.submissionService.retryFailed(
+			items,
+			this._locationId,
+			this._parentItemId
+		);
 
 		if (result.sessionExpired) {
 			return result;
@@ -742,6 +837,42 @@ class ScanWorkflow {
 	}
 
 	// =========================================================================
+	// DUPLICATE DETECTION
+	// =========================================================================
+
+	/** Get current duplicate matches */
+	get duplicateMatches(): DuplicateMatch[] {
+		return this._duplicateMatches;
+	}
+
+	/**
+	 * Re-check confirmed items for duplicates before submission.
+	 * Call this when entering the summary page to ensure latest state.
+	 */
+	async recheckDuplicates(): Promise<void> {
+		const confirmedItems = this.reviewService.confirmedItems;
+		if (confirmedItems.length === 0) return;
+
+		// Convert ConfirmedItems to the format expected by checkForDuplicates
+		const itemsAsReviewItems: ReviewItem[] = confirmedItems.map(item => ({
+			...item,
+			confirmed: undefined
+		})) as unknown as ReviewItem[];
+
+		await this.checkForDuplicates(itemsAsReviewItems);
+	}
+
+	/** Check if an item at a given index has a duplicate warning */
+	hasDuplicateWarning(itemIndex: number): boolean {
+		return this._duplicateMatches.some(match => match.item_index === itemIndex);
+	}
+
+	/** Get the duplicate match for a specific item index */
+	getDuplicateMatch(itemIndex: number): DuplicateMatch | undefined {
+		return this._duplicateMatches.find(match => match.item_index === itemIndex);
+	}
+
+	// =========================================================================
 	// RESET
 	// =========================================================================
 
@@ -758,6 +889,7 @@ class ScanWorkflow {
 		this._parentItemId = null;
 		this._parentItemName = null;
 		this._error = null;
+		this._duplicateMatches = [];
 	}
 
 	/** Start a new scan (keeps location and parent item if set) */

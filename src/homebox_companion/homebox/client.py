@@ -18,7 +18,8 @@ from throttled.asyncio import RateLimiterType, Throttled, rate_limiter, store
 
 from ..core.config import settings
 from ..core.exceptions import (
-    AuthenticationError,
+    HomeboxAPIError,
+    HomeboxAuthError,
     HomeboxConnectionError,
     HomeboxTimeoutError,
 )
@@ -36,7 +37,7 @@ def _get_homebox_rate_limiter() -> Throttled:
     return Throttled(
         using=RateLimiterType.TOKEN_BUCKET.value,
         quota=rate_limiter.per_sec(30, burst=10),
-        store=store.MemoryStore(),
+        store=store.MemoryStore(),  # type: ignore[arg-type]
         timeout=30,  # Wait up to 30s for capacity
     )
 
@@ -174,7 +175,7 @@ class HomeboxClient:
             Dictionary containing token, expiresAt, and other login response fields.
 
         Raises:
-            AuthenticationError: If authentication fails.
+            HomeboxAuthError: If authentication fails.
         """
         login_url = f"{self.base_url}/users/login"
         logger.debug(f"Login: Attempting connection to {login_url}")
@@ -232,7 +233,7 @@ class HomeboxClient:
         except ValueError as json_err:
             logger.error(f"Login: Failed to parse JSON response: {json_err}")
             logger.error(f"Login: Content-Type was '{content_type}'")
-            raise AuthenticationError(
+            raise HomeboxAuthError(
                 f"Server returned invalid JSON. Content-Type was '{content_type}'. "
                 "This usually indicates a reverse proxy or server configuration issue."
             ) from json_err
@@ -242,7 +243,7 @@ class HomeboxClient:
             logger.error(
                 f"Login: Response JSON missing token field. Keys present: {list(data.keys())}"
             )
-            raise AuthenticationError("Login response did not include a token field.")
+            raise HomeboxAuthError("Login response did not include a token field.")
 
         # Normalize token - Homebox v0.22.0+ returns with "Bearer " prefix
         # Strip it for consistent handling (we add it back in request headers)
@@ -267,7 +268,7 @@ class HomeboxClient:
             Dictionary containing token, expiresAt, and other response fields.
 
         Raises:
-            AuthenticationError: If the token is expired or invalid.
+            HomeboxAuthError: If the token is expired or invalid.
             RuntimeError: If the refresh fails for other reasons.
         """
         response = await self.client.get(
@@ -335,7 +336,7 @@ class HomeboxClient:
             List of Location objects.
         """
         raw = await self.list_locations(token, filter_children=filter_children)
-        return [Location.from_api(loc) for loc in raw]
+        return [Location.model_validate(loc) for loc in raw]
 
     async def get_location(self, token: str, location_id: str) -> dict[str, Any]:
         """Return a specific location by ID with its children.
@@ -368,7 +369,34 @@ class HomeboxClient:
             Location object including children.
         """
         raw = await self.get_location(token, location_id)
-        return Location.from_api(raw)
+        return Location.model_validate(raw)
+
+    async def get_location_tree(
+        self, token: str, *, with_items: bool = False
+    ) -> list[dict[str, Any]]:
+        """Get hierarchical location tree.
+
+        Args:
+            token: The bearer token from login.
+            with_items: If True, include items in the tree.
+
+        Returns:
+            List of tree item dictionaries with nested children.
+        """
+        params = {}
+        if with_items:
+            params["withItems"] = "true"
+
+        response = await self.client.get(
+            f"{self.base_url}/locations/tree",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+            params=params or None,
+        )
+        self._ensure_success(response, "Get location tree")
+        return response.json()
 
     @_rate_limited
     async def create_location(
@@ -449,6 +477,26 @@ class HomeboxClient:
         self._ensure_success(response, "Update location")
         return response.json()
 
+    @_rate_limited
+    async def delete_location(self, token: str, location_id: str) -> None:
+        """Delete a location by ID.
+
+        Args:
+            token: The bearer token from login.
+            location_id: The ID of the location to delete.
+
+        Returns:
+            None
+        """
+        response = await self.client.delete(
+            f"{self.base_url}/locations/{location_id}",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+        )
+        self._ensure_success(response, "Delete location")
+
     async def list_labels(self, token: str) -> list[dict[str, Any]]:
         """Return all available labels for the authenticated user.
 
@@ -478,7 +526,123 @@ class HomeboxClient:
             List of Label objects.
         """
         raw = await self.list_labels(token)
-        return [Label.from_api(label) for label in raw]
+        return [Label.model_validate(label) for label in raw]
+
+    async def get_label(self, token: str, label_id: str) -> dict[str, Any]:
+        """Return a specific label by ID.
+
+        Args:
+            token: The bearer token from login.
+            label_id: The ID of the label to fetch.
+
+        Returns:
+            Label dictionary (raw API response).
+        """
+        response = await self.client.get(
+            f"{self.base_url}/labels/{label_id}",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+        )
+        self._ensure_success(response, "Fetch label")
+        return response.json()
+
+    @_rate_limited
+    async def create_label(
+        self,
+        token: str,
+        name: str,
+        description: str = "",
+        color: str = "",
+    ) -> dict[str, Any]:
+        """Create a new label.
+
+        Args:
+            token: The bearer token from login.
+            name: The name of the new label.
+            description: Optional description for the label.
+            color: Optional color for the label.
+
+        Returns:
+            The created label dictionary.
+        """
+        payload: dict[str, Any] = {
+            "name": name,
+            "description": description,
+            "color": color,
+        }
+
+        response = await self.client.post(
+            f"{self.base_url}/labels",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+        self._ensure_success(response, "Create label")
+        return response.json()
+
+    @_rate_limited
+    async def update_label(
+        self,
+        token: str,
+        label_id: str,
+        name: str,
+        description: str = "",
+        color: str = "",
+    ) -> dict[str, Any]:
+        """Update an existing label.
+
+        Args:
+            token: The bearer token from login.
+            label_id: The ID of the label to update.
+            name: The new name for the label.
+            description: The new description for the label.
+            color: The new color for the label.
+
+        Returns:
+            The updated label dictionary.
+        """
+        payload: dict[str, Any] = {
+            "name": name,
+            "description": description,
+            "color": color,
+        }
+
+        response = await self.client.put(
+            f"{self.base_url}/labels/{label_id}",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+        self._ensure_success(response, "Update label")
+        return response.json()
+
+    @_rate_limited
+    async def delete_label(self, token: str, label_id: str) -> None:
+        """Delete a label by ID.
+
+        Args:
+            token: The bearer token from login.
+            label_id: The ID of the label to delete.
+
+        Returns:
+            None
+        """
+        response = await self.client.delete(
+            f"{self.base_url}/labels/{label_id}",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+        )
+        self._ensure_success(response, "Delete label")
 
     @_rate_limited
     async def create_item(self, token: str, item: ItemCreate) -> dict[str, Any]:
@@ -498,7 +662,7 @@ class HomeboxClient:
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
             },
-            json=item.to_payload(),
+            json=item.model_dump(by_alias=True, exclude_unset=True),
         )
         self._ensure_success(response, "Create item")
         return response.json()
@@ -514,7 +678,7 @@ class HomeboxClient:
             The created Item object.
         """
         raw = await self.create_item(token, item)
-        return Item.from_api(raw)
+        return Item.model_validate(raw)
 
     @_rate_limited
     async def update_item(
@@ -554,23 +718,43 @@ class HomeboxClient:
             The updated Item object.
         """
         raw = await self.update_item(token, item_id, item_data)
-        return Item.from_api(raw)
+        return Item.model_validate(raw)
 
     async def list_items(
-        self, token: str, *, location_id: str | None = None
-    ) -> list[dict[str, Any]]:
-        """List items, optionally filtered by location.
+        self,
+        token: str,
+        *,
+        location_id: str | None = None,
+        label_ids: list[str] | None = None,
+        query: str | None = None,
+        page: int | None = None,
+        page_size: int | None = None,
+    ) -> dict[str, Any]:
+        """List items with optional filtering, search, and pagination.
 
         Args:
             token: The bearer token from login.
             location_id: Optional location ID to filter items.
+            label_ids: Optional list of label IDs to filter items.
+            query: Optional search query string.
+            page: Optional page number (1-indexed).
+            page_size: Optional number of items per page.
 
         Returns:
-            List of item dictionaries from the paginated response.
+            Full paginated response: {items: [...], page, pageSize, total}
         """
         params = {}
         if location_id:
             params["locations"] = location_id
+        if label_ids:
+            # API expects comma-separated list for array params
+            params["labels"] = ",".join(label_ids)
+        if query:
+            params["q"] = query
+        if page is not None:
+            params["page"] = page
+        if page_size is not None:
+            params["pageSize"] = page_size
 
         response = await self.client.get(
             f"{self.base_url}/items",
@@ -581,9 +765,35 @@ class HomeboxClient:
             params=params or None,
         )
         self._ensure_success(response, "List items")
-        data = response.json()
-        # Homebox returns paginated response with items in "items" field
-        return data.get("items", [])
+        # Return full pagination response: {items, page, pageSize, total}
+        return response.json()
+
+    async def search_items(
+        self,
+        token: str,
+        *,
+        query: str,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Search items by text query with optional limit.
+
+        This is a convenience wrapper around list_items that defaults to
+        a reasonable page size for search results.
+
+        Args:
+            token: The bearer token from login.
+            query: Search query string.
+            limit: Maximum number of items to return (default 50).
+
+        Returns:
+            List of item dictionaries matching the search query.
+        """
+        response = await self.list_items(
+            token,
+            query=query,
+            page_size=limit,
+        )
+        return response.get("items", [])
 
     async def get_item(self, token: str, item_id: str) -> dict[str, Any]:
         """Get full item details by ID.
@@ -605,6 +815,120 @@ class HomeboxClient:
         self._ensure_success(response, "Get item")
         return response.json()
 
+    async def get_item_path(self, token: str, item_id: str) -> list[dict[str, Any]]:
+        """Get the full hierarchical path of an item.
+
+        Returns the location chain from root to the item's location.
+
+        Args:
+            token: The bearer token from login.
+            item_id: The ID of the item.
+
+        Returns:
+            List of path elements (each with id, name, type).
+        """
+        response = await self.client.get(
+            f"{self.base_url}/items/{item_id}/path",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+        )
+        self._ensure_success(response, "Get item path")
+        return response.json()
+
+    async def get_statistics(self, token: str) -> dict[str, Any]:
+        """Get group statistics overview.
+
+        Args:
+            token: The bearer token from login.
+
+        Returns:
+            Statistics dict containing:
+            - totalItems: Count of all items
+            - totalLocations: Count of locations
+            - totalLabels: Count of labels
+            - totalItemPrice: Sum of item prices
+            - totalWithWarranty: Count of items with warranty
+            - totalUsers: Count of users
+        """
+        response = await self.client.get(
+            f"{self.base_url}/groups/statistics",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+        )
+        self._ensure_success(response, "Get statistics")
+        return response.json()
+
+    async def get_statistics_by_location(self, token: str) -> list[dict[str, Any]]:
+        """Get statistics grouped by location.
+
+        Args:
+            token: The bearer token from login.
+
+        Returns:
+            List of dicts with id, name, and total (item count) for each location.
+        """
+        response = await self.client.get(
+            f"{self.base_url}/groups/statistics/locations",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+        )
+        self._ensure_success(response, "Get statistics by location")
+        return response.json()
+
+    async def get_statistics_by_label(self, token: str) -> list[dict[str, Any]]:
+        """Get statistics grouped by label.
+
+        Args:
+            token: The bearer token from login.
+
+        Returns:
+            List of dicts with id, name, and total (item count) for each label.
+        """
+        response = await self.client.get(
+            f"{self.base_url}/groups/statistics/labels",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+        )
+        self._ensure_success(response, "Get statistics by label")
+        return response.json()
+
+    async def get_item_by_asset_id(self, token: str, asset_id: str) -> dict[str, Any]:
+        """Get item by asset ID.
+
+        Args:
+            token: The bearer token from login.
+            asset_id: The asset ID (e.g., "000-085").
+
+        Returns:
+            The first item dictionary from the paginated result.
+            Note: The API returns a pagination result, we return the first item.
+
+        Raises:
+            Exception if no item found with the given asset ID.
+        """
+        response = await self.client.get(
+            f"{self.base_url}/assets/{asset_id}",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+        )
+        self._ensure_success(response, "Get item by asset ID")
+        data = response.json()
+        # API returns paginated result, get first item
+        items = data.get("items", [])
+        if not items:
+            raise ValueError(f"No item found with asset ID: {asset_id}")
+        return items[0]
+
     async def get_item_typed(self, token: str, item_id: str) -> Item:
         """Get full item details by ID as typed Item object.
 
@@ -616,7 +940,7 @@ class HomeboxClient:
             The Item object with all details.
         """
         raw = await self.get_item(token, item_id)
-        return Item.from_api(raw)
+        return Item.model_validate(raw)
 
     @_rate_limited
     async def delete_item(self, token: str, item_id: str) -> None:
@@ -655,7 +979,7 @@ class HomeboxClient:
             Tuple of (content_bytes, content_type).
 
         Raises:
-            AuthenticationError: If authentication fails.
+            HomeboxAuthError: If authentication fails.
             FileNotFoundError: If the attachment is not found (404).
             RuntimeError: If other API errors occur.
         """
@@ -729,7 +1053,13 @@ class HomeboxClient:
         raw = await self.upload_attachment(
             token, item_id, file_bytes, filename, mime_type, attachment_type
         )
-        return Attachment.from_api(raw)
+        # Handle nested document structure from API
+        doc = raw.get("document", {})
+        return Attachment(
+            id=raw.get("id", ""),
+            type=raw.get("type", ""),
+            document_id=doc.get("id") if doc else None,
+        )
 
     @_rate_limited
     async def ensure_asset_ids(self, token: str) -> int:
@@ -777,12 +1107,18 @@ class HomeboxClient:
         except ValueError:
             detail = response.text
 
-        # Raise AuthenticationError for 401 so callers can handle session expiry
+        # Raise HomeboxAuthError for 401 so callers can handle session expiry
         # Don't log 401s as errors - they're expected when session expires
         if response.status_code == 401:
             logger.debug(f"{context}: {request_info}-> 401 (unauthenticated)")
-            raise AuthenticationError(f"{context} failed: {detail}")
+            raise HomeboxAuthError(f"{context} failed: {detail}")
 
+        # Use domain exception for all other non-success responses
+        # This allows centralized exception handling in the FastAPI layer
         logger.error(f"{context} failed: {request_info}-> {response.status_code}")
         logger.debug(f"Response detail: {detail}")
-        raise RuntimeError(f"{context} failed with {response.status_code}: {detail}")
+        raise HomeboxAPIError(
+            message=f"{context} failed with {response.status_code}: {detail}",
+            user_message=f"Homebox API error: {context} failed",
+            context={"status_code": response.status_code, "detail": str(detail)[:200]},
+        )

@@ -5,7 +5,10 @@ clashes with other applications on the same system.
 
 Environment Variables:
     HBC_HOMEBOX_URL: Base URL of your Homebox instance (default: demo server).
-        We automatically append /api/v1 to this URL.
+        We automatically append /api/v1 to this URL for API calls.
+    HBC_LINK_BASE_URL: Optional public-facing URL for Homebox links shown to users.
+        Defaults to HBC_HOMEBOX_URL if not set. Useful when the API is accessed
+        internally (e.g., 127.0.0.1) but users access via a public domain.
     HBC_OPENAI_API_KEY: (Legacy) API key for LLM provider (use HBC_LLM_API_KEY instead)
     HBC_OPENAI_MODEL: (Legacy) LLM model to use (use HBC_LLM_MODEL instead, default: gpt-5-mini)
     HBC_LLM_API_KEY: API key for the configured LLM provider (preferred)
@@ -13,6 +16,7 @@ Environment Variables:
     HBC_LLM_API_BASE: Optional API base URL for LLM-compatible gateways
     HBC_LLM_ALLOW_UNSAFE_MODELS: If true, allow models not in the curated allowlist (best-effort)
     HBC_LLM_TIMEOUT: LLM request timeout in seconds (default: 120)
+    HBC_LLM_STREAM_TIMEOUT: LLM streaming timeout in seconds (default: 300)
     HBC_SERVER_HOST: Host to bind the web server to (default: 0.0.0.0)
     HBC_SERVER_PORT: Port for the web server (default: 8000). In production,
         this single port serves both the API and the static frontend.
@@ -22,6 +26,17 @@ Environment Variables:
     HBC_CORS_ORIGINS: Allowed CORS origins, comma-separated or "*" for all (default: "*")
     HBC_IMAGE_QUALITY: Image quality for Homebox uploads (default: medium).
         Options: raw (original), high (2560px, 85%), medium (1920px, 75%), low (1280px, 60%)
+    HBC_CHAT_ENABLED: Enable the conversational assistant (default: true)
+    HBC_CHAT_MAX_HISTORY: Max messages in conversation context (default: 20)
+    HBC_CHAT_APPROVAL_TIMEOUT: Seconds before pending approvals expire (default: 300)
+    HBC_DATA_DIR: Directory for persistent data storage (default: /data in Docker, ./data locally)
+    HBC_STATE_MAX_RETRIES: Maximum retry attempts for failed image processing (default: 3)
+    HBC_STATE_LOCK_TIMEOUT: Timeout in seconds for state file locking (default: 10)
+    HBC_USE_OLLAMA: Enable Ollama for local AI processing (default: false)
+    HBC_OLLAMA_INTERNAL: Use embedded/internal Ollama in Docker (default: false)
+    HBC_OLLAMA_URL: External Ollama URL (default: http://localhost:11434)
+    HBC_OLLAMA_MODEL: Ollama model to use (default: minicpm-v)
+    HBC_FALLBACK_TO_CLOUD: Fall back to cloud AI if Ollama fails (default: true)
 
 AI Output Customization env vars (HBC_AI_*) are handled separately in
 field_preferences.py via FieldPreferencesDefaults.
@@ -71,6 +86,8 @@ class Settings(BaseSettings):
 
     # Homebox configuration - user provides base URL, we append /api/v1
     homebox_url: str = DEMO_HOMEBOX_URL
+    # Optional public-facing URL for links (defaults to homebox_url)
+    link_base_url: str = ""
 
     # Legacy LLM configuration (deprecated - use llm_* fields instead)
     openai_api_key: str = ""
@@ -102,6 +119,8 @@ class Settings(BaseSettings):
 
     # LLM request timeout (in seconds)
     llm_timeout: int = 120
+    # LLM streaming timeout (in seconds) - longer for large responses
+    llm_stream_timeout: int = 300
 
     # Demo mode - enables pre-filled credentials for demo deployments
     demo_mode: bool = False
@@ -117,12 +136,36 @@ class Settings(BaseSettings):
     rate_limit_tpm: int = 400_000  # Tokens per minute (Tier 1 limit: 500k for gpt-5-mini)
     rate_limit_burst_multiplier: float = 1.5  # Burst capacity multiplier
 
+    # Chat/MCP configuration
+    chat_enabled: bool = True  # Enable the conversational assistant
+    chat_max_history: int = 20  # Max messages in conversation context
+    chat_approval_timeout: int = 300  # Seconds before pending approvals expire
+    chat_max_response_tokens: int = 0  # 0 = no limit (LLM decides naturally)
+
+    # State management configuration (crash recovery)
+    data_dir: str = "./data"  # Directory for persistent data storage
+    state_max_retries: int = 3  # Max retry attempts for failed processing
+    state_lock_timeout: int = 10  # Timeout in seconds for file lock
+
+    # Ollama configuration (local AI processing)
+    use_ollama: bool = False  # Enable Ollama
+    ollama_internal: bool = False  # Use embedded Ollama (Docker)
+    ollama_url: str = "http://localhost:11434"  # External Ollama URL
+    ollama_model: str = "minicpm-v"  # Model to use
+    fallback_to_cloud: bool = True  # Fall back to cloud if Ollama fails
+
     @computed_field
     @property
     def api_url(self) -> str:
         """Full Homebox API URL with /api/v1 path appended."""
         base = self.homebox_url.rstrip("/")
         return f"{base}/api/v1"
+
+    @computed_field
+    @property
+    def effective_link_base_url(self) -> str:
+        """Public-facing URL for user links (HBC_LINK_BASE_URL or fallback to HBC_HOMEBOX_URL)."""
+        return (self.link_base_url or self.homebox_url).rstrip("/")
 
     @computed_field
     @property

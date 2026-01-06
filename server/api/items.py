@@ -6,11 +6,20 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse, Response
 from loguru import logger
 
-from homebox_companion import AuthenticationError, DetectedItem, HomeboxClient
+from homebox_companion import DetectedItem, HomeboxAuthError, HomeboxClient
 from homebox_companion.homebox import ItemCreate
+from homebox_companion.services.duplicate_detector import DuplicateDetector
 
-from ..dependencies import get_client, get_token, validate_file_size
-from ..schemas.items import BatchCreateRequest
+from ..dependencies import get_client, get_duplicate_detector, get_token, validate_file_size
+from ..schemas.items import (
+    BatchCreateRequest,
+    DuplicateCheckRequest,
+    DuplicateCheckResponse,
+    DuplicateIndexRebuildResponse,
+    DuplicateIndexStatus,
+    DuplicateMatch,
+    ExistingItemInfo,
+)
 
 router = APIRouter()
 
@@ -28,7 +37,8 @@ async def list_items(
     """
     logger.debug(f"Fetching items for location_id={location_id}")
 
-    items = await client.list_items(token, location_id=location_id)
+    response = await client.list_items(token, location_id=location_id)
+    items = response.get("items", [])
 
     # Return simplified item data
     result = [
@@ -50,6 +60,7 @@ async def create_items(
     request: BatchCreateRequest,
     token: Annotated[str, Depends(get_token)],
     client: Annotated[HomeboxClient, Depends(get_client)],
+    detector: Annotated[DuplicateDetector, Depends(get_duplicate_detector)],
 ) -> JSONResponse:
     """Create multiple items in Homebox.
 
@@ -91,7 +102,7 @@ async def create_items(
             item_create = ItemCreate(
                 name=detected_item.name,
                 quantity=detected_item.quantity,
-                description=detected_item.description,
+                description=detected_item.description or "",
                 location_id=detected_item.location_id,
                 label_ids=detected_item.label_ids,
                 parent_id=item_input.parent_id,  # Include parent_id for sub-items
@@ -105,27 +116,47 @@ async def create_items(
                 extended_payload = detected_item.get_extended_fields_payload()
                 if extended_payload:
                     logger.debug(f"  Updating with extended fields: {extended_payload.keys()}")
-                    # Get the full item to merge with extended fields
-                    full_item = await client.get_item(token, item_id)
-                    # Merge extended fields into the full item data
-                    update_data = {
-                        "name": full_item.get("name"),
-                        "description": full_item.get("description"),
-                        "quantity": full_item.get("quantity"),
-                        "locationId": full_item.get("location", {}).get("id"),
-                        "labelIds": [
-                            lbl.get("id") for lbl in full_item.get("labels", []) if lbl.get("id")
-                        ],
-                        **extended_payload,
-                    }
-                    # Preserve parentId if it was set
-                    if item_input.parent_id:
-                        update_data["parentId"] = item_input.parent_id
-                    result = await client.update_item(token, item_id, update_data)
-                    logger.info("  Updated item with extended fields")
+                    try:
+                        # Get the full item to merge with extended fields
+                        full_item = await client.get_item(token, item_id)
+                        # Merge extended fields into the full item data
+                        update_data = {
+                            "name": full_item.get("name"),
+                            "description": full_item.get("description"),
+                            "quantity": full_item.get("quantity"),
+                            "locationId": full_item.get("location", {}).get("id"),
+                            "labelIds": [
+                                lbl.get("id")
+                                for lbl in full_item.get("labels", [])
+                                if lbl.get("id")
+                            ],
+                            **extended_payload,
+                        }
+                        # Preserve parentId if it was set
+                        if item_input.parent_id:
+                            update_data["parentId"] = item_input.parent_id
+                        result = await client.update_item(token, item_id, update_data)
+                        logger.info("  Updated item with extended fields")
+                    except HomeboxAuthError:
+                        # Auth failure during update - don't delete the item!
+                        # The item was created successfully, user just needs fresh token.
+                        # Re-raise to trigger the outer auth handler.
+                        raise
+                    except Exception as update_err:
+                        # Non-auth update failures - clean up the partially created item
+                        logger.warning(
+                            f"Extended fields update failed for '{item_input.name}', "
+                            f"cleaning up item {item_id}: {update_err}"
+                        )
+                        try:
+                            await client.delete_item(token, item_id)
+                            logger.info(f"  Cleaned up partial item {item_id}")
+                        except Exception as delete_err:
+                            logger.error(f"  Failed to clean up item {item_id}: {delete_err}")
+                        raise update_err
 
             created.append(result)
-        except AuthenticationError:
+        except HomeboxAuthError:
             # Auth failure means all subsequent items will also fail - abort early
             logger.error(f"Authentication failed while creating '{item_input.name}'")
             errors.append(f"Authentication failed for '{item_input.name}'")
@@ -155,6 +186,15 @@ async def create_items(
         except Exception as e:
             # Non-fatal - log but don't fail the request
             logger.warning(f"Failed to ensure asset IDs: {e}")
+
+        # Add created items to duplicate detection index (incremental update)
+        items_added = 0
+        for item in created:
+            if detector.add_item_to_index(item):
+                items_added += 1
+        if items_added > 0:
+            detector.save()  # Persist changes
+            logger.debug(f"Added {items_added} item(s) to duplicate index")
 
     return JSONResponse(
         content={
@@ -230,6 +270,81 @@ async def get_item_attachment(
         raise HTTPException(status_code=404, detail="Attachment not found") from e
 
 
+@router.post("/items/check-duplicates", response_model=DuplicateCheckResponse)
+async def check_duplicates(
+    request: DuplicateCheckRequest,
+    token: Annotated[str, Depends(get_token)],
+    detector: Annotated[DuplicateDetector, Depends(get_duplicate_detector)],
+) -> DuplicateCheckResponse:
+    """Check for potential duplicate items by serial number.
+
+    This endpoint compares the serial numbers of the provided items against
+    existing items in Homebox. Items with matching serial numbers are flagged
+    as potential duplicates.
+
+    Uses the shared duplicate detection index which is:
+    - Persisted to disk (survives restarts)
+    - Incrementally updated when items are created
+    - Differential updates on startup (only fetches new items)
+
+    Use this before creating items to warn users about possible duplicates.
+    """
+    logger.info(f"Checking {len(request.items)} items for duplicates")
+
+    # Convert request items to dicts for the detector
+    items_to_check = [
+        {
+            "name": item.name,
+            "serial_number": item.serial_number,
+        }
+        for item in request.items
+    ]
+
+    # Count items with serial numbers
+    items_with_serial = sum(1 for item in items_to_check if item.get("serial_number"))
+    logger.debug(f"{items_with_serial} items have serial numbers to check")
+
+    if items_with_serial == 0:
+        return DuplicateCheckResponse(
+            duplicates=[],
+            checked_count=0,
+            message="No items with serial numbers to check",
+        )
+
+    # Run duplicate detection (uses shared index with auto-load)
+    matches = await detector.find_duplicates(token, items_to_check)
+
+    # Convert to response schema
+    duplicates = [
+        DuplicateMatch(
+            item_index=match.item_index,
+            item_name=match.item_name,
+            serial_number=match.serial_number,
+            existing_item=ExistingItemInfo(
+                id=match.existing_item.id,
+                name=match.existing_item.name,
+                serial_number=match.existing_item.serial_number,
+                location_id=match.existing_item.location_id,
+                location_name=match.existing_item.location_name,
+            ),
+        )
+        for match in matches
+    ]
+
+    message = (
+        f"Found {len(duplicates)} potential duplicate(s)"
+        if duplicates
+        else "No duplicates found"
+    )
+
+    logger.info(message)
+    return DuplicateCheckResponse(
+        duplicates=duplicates,
+        checked_count=items_with_serial,
+        message=message,
+    )
+
+
 @router.delete("/items/{item_id}")
 async def delete_item(
     item_id: str,
@@ -245,3 +360,80 @@ async def delete_item(
     await client.delete_item(token, item_id)
     logger.info(f"Successfully deleted item {item_id}")
     return {"message": "Item deleted"}
+
+
+# =============================================================================
+# DUPLICATE INDEX MANAGEMENT
+# =============================================================================
+
+
+@router.get("/items/duplicate-index/status", response_model=DuplicateIndexStatus)
+async def get_duplicate_index_status(
+    detector: Annotated[DuplicateDetector, Depends(get_duplicate_detector)],
+) -> DuplicateIndexStatus:
+    """Get the current status of the duplicate detection index.
+
+    Returns information about when the index was last built/updated,
+    how many items are indexed, and whether it's currently loaded.
+    """
+    status = detector.get_status()
+    return DuplicateIndexStatus(
+        last_build_time=status.last_build_time,
+        last_update_time=status.last_update_time,
+        total_items_indexed=status.total_items_indexed,
+        items_with_serials=status.items_with_serials,
+        highest_asset_id=status.highest_asset_id,
+        is_loaded=status.is_loaded,
+    )
+
+
+@router.post("/items/duplicate-index/rebuild", response_model=DuplicateIndexRebuildResponse)
+async def rebuild_duplicate_index(
+    token: Annotated[str, Depends(get_token)],
+    detector: Annotated[DuplicateDetector, Depends(get_duplicate_detector)],
+) -> DuplicateIndexRebuildResponse:
+    """Rebuild the duplicate detection index from scratch.
+
+    This fetches ALL items from Homebox and rebuilds the serial number index.
+    Use this if:
+    - Items were added/modified outside of HomeBox-Companion
+    - The index appears out of sync
+    - You want to ensure complete accuracy
+
+    Note: For large inventories, this may take several seconds as it needs
+    to fetch details for each item to get serial numbers.
+    """
+    logger.info("Starting duplicate index rebuild (manual trigger)")
+
+    try:
+        status = await detector.rebuild_index(token)
+    except AuthenticationError as e:
+        logger.warning(f"Authentication failed during index rebuild: {e}")
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication failed. Please log in to Homebox first.",
+        ) from e
+    except RuntimeError as e:
+        logger.error(f"Index rebuild failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Failed to rebuild index: {e}",
+        ) from e
+    except Exception as e:
+        logger.exception("Unexpected error during index rebuild")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error rebuilding index: {type(e).__name__}: {e}",
+        ) from e
+
+    return DuplicateIndexRebuildResponse(
+        status=DuplicateIndexStatus(
+            last_build_time=status.last_build_time,
+            last_update_time=status.last_update_time,
+            total_items_indexed=status.total_items_indexed,
+            items_with_serials=status.items_with_serials,
+            highest_asset_id=status.highest_asset_id,
+            is_loaded=status.is_loaded,
+        ),
+        message=f"Index rebuilt: {status.items_with_serials} items with serial numbers indexed",
+    )

@@ -10,7 +10,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from homebox_companion import AuthenticationError, HomeboxClient, ItemCreate
+from homebox_companion import HomeboxAuthError, HomeboxClient, ItemCreate
+from homebox_companion.core.exceptions import HomeboxAPIError
 
 # All tests in this module hit the real Homebox demo server
 pytestmark = pytest.mark.live
@@ -45,7 +46,7 @@ async def test_login_with_invalid_credentials_raises_error(
     """Login with invalid credentials should raise an error."""
     async with HomeboxClient(base_url=homebox_api_url) as client:
         # Demo server returns 500 for invalid credentials, not 401
-        with pytest.raises((AuthenticationError, RuntimeError)):
+        with pytest.raises((HomeboxAuthError, RuntimeError)):
             await client.login("invalid@example.com", "wrongpassword")
 
 
@@ -358,7 +359,7 @@ async def test_delete_item_removes_item(
         await client.delete_item(token, item_id)
 
         # Verify item is gone (should raise 404)
-        with pytest.raises(RuntimeError) as exc_info:
+        with pytest.raises(HomeboxAPIError) as exc_info:
             await client.get_item(token, item_id)
 
         # Check it's a 404 error
@@ -401,5 +402,5 @@ async def test_create_and_delete_item_cleanup_workflow(
         await client.delete_item(token, item_id)
 
         # Confirm deletion
-        with pytest.raises(RuntimeError):
+        with pytest.raises(HomeboxAPIError):
             await client.get_item(token, item_id)

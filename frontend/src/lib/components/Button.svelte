@@ -28,11 +28,11 @@
 
 	/**
 	 * Handle touch events for iOS Safari keyboard dismissal edge case.
-	 * 
+	 *
 	 * iOS Safari swallows the first click event after dismissing the virtual keyboard,
 	 * but touchend still fires reliably. This handler ensures buttons respond to taps
 	 * even when iOS would otherwise swallow the click.
-	 * 
+	 *
 	 * See: https://github.com/Duelion/homebox-companion/issues/72
 	 */
 	function handleTouchEnd(e: TouchEvent) {
@@ -56,7 +56,7 @@
 		e.preventDefault();
 
 		// Reset flag after the synthetic click would have fired
-		// 300ms matches iOS's legacy click delay (though modern iOS with 
+		// 300ms matches iOS's legacy click delay (though modern iOS with
 		// touch-action:manipulation is faster, we keep this for safety)
 		setTimeout(() => {
 			touchFired = false;
@@ -80,11 +80,16 @@
 
 	// Modernized variant classes with tonal colors
 	const variantClasses = {
-		primary: 'bg-primary-600 text-white hover:bg-primary-500 active:bg-primary-700 disabled:bg-neutral-800 disabled:text-neutral-500 focus:ring-primary-500/50',
-		secondary: 'bg-neutral-800 text-neutral-200 hover:bg-neutral-700 hover:border-neutral-600 active:bg-neutral-900 border border-neutral-700 disabled:bg-neutral-900 disabled:text-neutral-600 disabled:border-neutral-800 focus:ring-neutral-500/50',
-		ghost: 'bg-transparent text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 active:bg-neutral-700 disabled:text-neutral-600 focus:ring-neutral-500/50',
-		danger: 'bg-error-600 text-white hover:bg-error-500 active:bg-error-700 disabled:bg-neutral-800 disabled:text-neutral-500 focus:ring-error-500/50',
-		warning: 'bg-warning-500 text-white hover:bg-warning-600 active:bg-warning-700 disabled:bg-neutral-800 disabled:text-neutral-500 focus:ring-warning-500/50',
+		primary:
+			'bg-primary-600 text-white hover:bg-primary-500 active:bg-primary-700 disabled:bg-neutral-800 disabled:text-neutral-500 focus:ring-primary-500/50',
+		secondary:
+			'bg-neutral-800 text-neutral-200 hover:bg-neutral-700 hover:border-neutral-600 active:bg-neutral-900 border border-neutral-700 disabled:bg-neutral-900 disabled:text-neutral-600 disabled:border-neutral-800 focus:ring-neutral-500/50',
+		ghost:
+			'bg-transparent text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 active:bg-neutral-700 disabled:text-neutral-600 focus:ring-neutral-500/50',
+		danger:
+			'bg-error-600 text-white hover:bg-error-500 active:bg-error-700 disabled:bg-neutral-800 disabled:text-neutral-500 focus:ring-error-500/50',
+		warning:
+			'bg-warning-500 text-white hover:bg-warning-600 active:bg-warning-700 disabled:bg-neutral-800 disabled:text-neutral-500 focus:ring-warning-500/50',
 	};
 
 	const sizeClasses = {
@@ -99,12 +104,16 @@
 	onclick={handleClick}
 	ontouchend={handleTouchEnd}
 	disabled={disabled || loading}
-	class="inline-flex items-center justify-center rounded-xl font-medium transition-all duration-150 active:scale-[0.98] disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-neutral-950 {variantClasses[variant]} {sizeClasses[size]}"
+	class="inline-flex items-center justify-center rounded-xl font-medium transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-neutral-950 active:scale-[0.98] disabled:cursor-not-allowed {variantClasses[
+		variant
+	]} {sizeClasses[size]}"
 	class:w-full={full}
 	style="touch-action: manipulation;"
 >
 	{#if loading}
-		<div class="w-5 h-5 rounded-full border-2 border-current/30 border-t-current animate-spin"></div>
+		<div
+			class="border-current/30 h-5 w-5 animate-spin rounded-full border-2 border-t-current"
+		></div>
 	{/if}
 	{@render children()}
 </button>

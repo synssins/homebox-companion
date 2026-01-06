@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
+	import { onDestroy } from 'svelte';
 
 	// Props
 	interface Props {
@@ -17,9 +17,6 @@
 	let hasCalledComplete = $state(false);
 	let isComplete = $state(false);
 
-	// Calculate the real progress percentage (where we should eventually snap to)
-	let realProgress = $derived((current / total) * 100);
-	
 	// Calculate the target for fake progress (90% toward the next milestone)
 	let targetProgress = $derived(() => {
 		if (current >= total) return 100;
@@ -32,7 +29,7 @@
 	let notches = $derived(
 		Array.from({ length: total - 1 }, (_, i) => ({
 			position: ((i + 1) / total) * 100,
-			completed: i < current
+			completed: i < current,
 		}))
 	);
 
@@ -71,7 +68,7 @@
 			const milestone = (current / total) * 100;
 			displayProgress = milestone;
 		}
-		
+
 		// Start animating toward the next target if not complete
 		if (current < total) {
 			hasCalledComplete = false;
@@ -80,16 +77,16 @@
 		} else {
 			// All items complete - animate to 100% then call onComplete
 			stopAnimation();
-			
+
 			// Smoothly animate to 100%
 			const finalAnimationInterval = window.setInterval(() => {
 				if (displayProgress >= 99.9) {
 					displayProgress = 100;
 					clearInterval(finalAnimationInterval);
-					
+
 					// Trigger completion effect
 					isComplete = true;
-					
+
 					// Wait for the pop animation + brief hold before signaling completion
 					if (!hasCalledComplete && onComplete) {
 						setTimeout(() => {
@@ -112,37 +109,37 @@
 	});
 </script>
 
-<div class="bg-surface rounded-xl border border-border p-4 mb-6">
+<div class="mb-6 rounded-xl border border-neutral-700 bg-neutral-800 p-4">
 	<!-- Header with message and count -->
-	<div class="flex items-center justify-between mb-2">
-		<span class="text-sm font-medium text-text">{message}</span>
-		<span class="text-sm text-text-muted">{current} / {total}</span>
+	<div class="mb-2 flex items-center justify-between">
+		<span class="text-sm font-medium text-neutral-200">{message}</span>
+		<span class="text-sm text-neutral-400">{current} / {total}</span>
 	</div>
 
 	<!-- Progress bar with notches -->
 	<div class="relative">
 		<!-- Track -->
-		<div 
-			class="h-2 bg-surface-elevated rounded-full overflow-hidden transition-all duration-300"
+		<div
+			class="h-2 overflow-hidden rounded-full bg-neutral-700 transition-all duration-300"
 			class:complete-pop={isComplete}
 		>
 			<!-- Fill bar with smooth transition -->
 			<div
 				class="h-full transition-all duration-300 ease-out"
-				class:bg-primary={!isComplete}
-				class:bg-success={isComplete}
+				class:bg-primary-500={!isComplete}
+				class:bg-success-500={isComplete}
 				style="width: {Math.max(0, Math.min(100, displayProgress))}%"
 			></div>
 		</div>
 
 		<!-- Notches -->
-		<div class="absolute inset-0 pointer-events-none">
-			{#each notches as notch}
+		<div class="pointer-events-none absolute inset-0">
+			{#each notches as notch (notch.position)}
 				<div
-					class="absolute top-1/2 -translate-y-1/2 w-0.5 h-3 transition-colors duration-300"
-					class:bg-primary={notch.completed && !isComplete}
-					class:bg-success={notch.completed && isComplete}
-					class:bg-border={!notch.completed}
+					class="absolute top-1/2 h-3 w-0.5 -translate-y-1/2 transition-colors duration-300"
+					class:bg-primary-500={notch.completed && !isComplete}
+					class:bg-success-500={notch.completed && isComplete}
+					class:bg-neutral-600={!notch.completed}
 					style="left: {notch.position}%"
 				></div>
 			{/each}
@@ -152,20 +149,6 @@
 
 <style>
 	.complete-pop {
-		animation: pop 300ms ease-out;
-		box-shadow: 0 0 12px rgba(34, 197, 94, 0.5);
-	}
-
-	@keyframes pop {
-		0% {
-			transform: scale(1);
-		}
-		50% {
-			transform: scale(1.03);
-		}
-		100% {
-			transform: scale(1);
-		}
+		@apply animate-pop shadow-success-glow;
 	}
 </style>
-

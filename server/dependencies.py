@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import httpx
 from fastapi import Depends, Header, HTTPException, UploadFile
 from loguru import logger
 
-from homebox_companion import AuthenticationError, HomeboxClient, settings
+from homebox_companion import HomeboxAuthError, HomeboxClient, settings
+
+if TYPE_CHECKING:
+    from homebox_companion.chat.session import ChatSession
+    from homebox_companion.chat.store import SessionStoreProtocol
+    from homebox_companion.mcp.executor import ToolExecutor
+
 from homebox_companion.core.field_preferences import FieldPreferences, load_field_preferences
+from homebox_companion.core.ai_config import load_ai_config, AIProvider
+from homebox_companion.services.duplicate_detector import DuplicateDetector
 
 
 class ClientHolder:
@@ -76,23 +84,167 @@ class ClientHolder:
         """
         self._client = None
 
-    @property
-    def is_initialized(self) -> bool:
-        """Check if the client has been initialized."""
-        return self._client is not None
-
 
 # Singleton holder instance - each worker gets its own
 client_holder = ClientHolder()
 
 
-def set_client(client: HomeboxClient) -> None:
-    """Set the global Homebox client instance.
+class DuplicateDetectorHolder:
+    """Manages the shared DuplicateDetector instance.
 
-    This is a convenience wrapper for backward compatibility.
-    Prefer using client_holder.set() directly for clarity.
+    The DuplicateDetector maintains a persistent index of serial numbers
+    for duplicate detection. It should be shared across requests to benefit
+    from caching and incremental updates.
     """
-    client_holder.set(client)
+
+    def __init__(self) -> None:
+        self._detector: DuplicateDetector | None = None
+
+    def get_or_create(self, client: HomeboxClient) -> DuplicateDetector:
+        """Get the shared detector instance, creating if needed.
+
+        Args:
+            client: The HomeboxClient to use for API calls.
+
+        Returns:
+            The shared DuplicateDetector instance.
+        """
+        if self._detector is None:
+            self._detector = DuplicateDetector(client)
+            logger.debug("Created new DuplicateDetector instance")
+        return self._detector
+
+    def get(self) -> DuplicateDetector | None:
+        """Get the detector if initialized, or None."""
+        return self._detector
+
+    def reset(self) -> None:
+        """Reset the holder (for testing)."""
+        self._detector = None
+
+
+# Singleton holder for duplicate detector
+duplicate_detector_holder = DuplicateDetectorHolder()
+
+
+class SessionStoreHolder:
+    """Manages the lifecycle of the shared session store.
+
+    Similar to ClientHolder, this provides explicit lifecycle management
+    for the session store, enabling testing and future backend swaps.
+
+    Usage:
+        # In app lifespan:
+        session_store_holder.set(MemorySessionStore())
+        yield
+        # No cleanup needed for memory store
+
+        # In tests:
+        session_store_holder.set(mock_store)
+        # ... run tests ...
+        session_store_holder.reset()
+    """
+
+    def __init__(self) -> None:
+        self._store: SessionStoreProtocol | None = None
+
+    def set(self, store: SessionStoreProtocol) -> None:
+        """Set the shared store instance.
+
+        Args:
+            store: The session store instance to use.
+        """
+        self._store = store
+
+    def get(self) -> SessionStoreProtocol:
+        """Get the shared store instance, creating default if needed.
+
+        Returns:
+            The shared session store instance.
+        """
+        if self._store is None:
+            from homebox_companion.chat.store import MemorySessionStore
+
+            self._store = MemorySessionStore()
+            logger.debug("Created default MemorySessionStore")
+        return self._store
+
+    def reset(self) -> None:
+        """Reset the holder (for testing).
+
+        Use this in tests to reset state between test cases.
+        """
+        self._store = None
+
+
+# Singleton session store holder
+session_store_holder = SessionStoreHolder()
+
+
+class ToolExecutorHolder:
+    """Manages the shared ToolExecutor instance.
+
+    This makes the ToolExecutor a singleton, ensuring that schema caching
+    is effective across requests rather than being recreated per-request.
+
+    The holder tracks the client reference to ensure the executor is
+    recreated if the client changes (important for testing).
+
+    Usage:
+        # Get executor (auto-creates if needed):
+        executor = tool_executor_holder.get(client)
+
+        # In tests:
+        tool_executor_holder.reset()
+    """
+
+    def __init__(self) -> None:
+        self._executor: ToolExecutor | None = None
+        self._client_id: int | None = None  # Track client identity
+
+    def get(self, client: HomeboxClient) -> ToolExecutor:
+        """Get or create the shared executor instance.
+
+        If the client reference has changed (e.g., during testing),
+        the executor is recreated with the new client.
+
+        Args:
+            client: HomeboxClient for tool execution.
+
+        Returns:
+            The shared ToolExecutor instance.
+        """
+        from homebox_companion.mcp.executor import ToolExecutor
+
+        current_client_id = id(client)
+
+        # Recreate executor if client has changed
+        if self._executor is None or self._client_id != current_client_id:
+            if self._executor is not None:
+                logger.debug("Client changed, recreating ToolExecutor")
+            self._executor = ToolExecutor(client)
+            self._client_id = current_client_id
+            logger.debug("Created shared ToolExecutor instance")
+
+        return self._executor
+
+    def reset(self) -> None:
+        """Reset the holder (for testing).
+
+        Use this in tests to reset state between test cases.
+        """
+        self._executor = None
+        self._client_id = None
+
+
+# Singleton tool executor holder
+tool_executor_holder = ToolExecutorHolder()
+
+
+# =============================================================================
+# CORE DEPENDENCIES (defined first so they can be used in Depends())
+# =============================================================================
+
 
 
 def get_client() -> HomeboxClient:
@@ -104,6 +256,18 @@ def get_client() -> HomeboxClient:
     return client_holder.get()
 
 
+def get_duplicate_detector(
+    client: Annotated[HomeboxClient, Depends(get_client)],
+) -> DuplicateDetector:
+    """Get the shared DuplicateDetector instance.
+
+    This is a FastAPI dependency that returns the shared detector instance,
+    creating it if needed. The detector maintains a persistent index of
+    serial numbers for duplicate detection.
+    """
+    return duplicate_detector_holder.get_or_create(client)
+
+
 def get_token(authorization: Annotated[str | None, Header()] = None) -> str:
     """Extract bearer token from Authorization header."""
     if not authorization:
@@ -111,6 +275,41 @@ def get_token(authorization: Annotated[str | None, Header()] = None) -> str:
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Invalid authorization format")
     return authorization[7:]
+
+
+# =============================================================================
+# COMPOSITE DEPENDENCIES (depend on core dependencies above)
+# =============================================================================
+
+
+def get_executor(
+    client: Annotated[HomeboxClient, Depends(get_client)],
+) -> ToolExecutor:
+    """Get the shared ToolExecutor.
+
+    This is a FastAPI dependency that returns the shared executor instance.
+    Can be overridden in tests using app.dependency_overrides[get_executor].
+    """
+    return tool_executor_holder.get(client)
+
+
+
+def get_session(
+    token: Annotated[str, Depends(get_token)],
+) -> ChatSession:
+    """Get the chat session for the current user.
+
+    This is a FastAPI dependency that retrieves (or creates) the session
+    for the authenticated user.
+
+    Args:
+        token: The user's auth token (from get_token dependency).
+
+    Returns:
+        The ChatSession for this user.
+    """
+    store = session_store_holder.get()
+    return store.get(token)
 
 
 def require_auth(token: Annotated[str, Depends(get_token)]) -> None:
@@ -124,8 +323,87 @@ def require_auth(token: Annotated[str, Depends(get_token)]) -> None:
         async def protected_route() -> dict:
             return {"status": "authenticated"}
     """
-    # Token validation happens in get_token; nothing more needed here
-    pass
+    # Token validation happens in get_token; explicitly acknowledge unused param
+    _ = token
+
+
+@dataclass
+class LLMConfig:
+    """Configuration for LLM access.
+
+    Attributes:
+        api_key: The API key for the provider (may be None for Ollama/LiteLLM).
+        model: The model name to use.
+        provider: The provider type (ollama, openai, anthropic, litellm).
+    """
+
+    api_key: str | None
+    model: str
+    provider: str
+
+
+def get_llm_config() -> LLMConfig:
+    """Get LLM configuration from AI config or environment variables.
+
+    This function checks the AI config file first, then falls back to
+    environment variables for backward compatibility.
+
+    Returns:
+        LLMConfig with api_key, model, and provider.
+
+    Raises:
+        HTTPException: 500 if no LLM is properly configured.
+    """
+    # First, try to load from new AI config system
+    try:
+        ai_config = load_ai_config()
+        active_provider = ai_config.active_provider
+
+        if active_provider == AIProvider.OLLAMA:
+            if ai_config.ollama.enabled:
+                return LLMConfig(
+                    api_key=None,  # Ollama doesn't need API key
+                    model=ai_config.ollama.model,
+                    provider="ollama",
+                )
+        elif active_provider == AIProvider.OPENAI:
+            if ai_config.openai.enabled and ai_config.openai.api_key:
+                return LLMConfig(
+                    api_key=ai_config.openai.api_key.get_secret_value(),
+                    model=ai_config.openai.model,
+                    provider="openai",
+                )
+        elif active_provider == AIProvider.ANTHROPIC:
+            if ai_config.anthropic.enabled and ai_config.anthropic.api_key:
+                return LLMConfig(
+                    api_key=ai_config.anthropic.api_key.get_secret_value(),
+                    model=ai_config.anthropic.model,
+                    provider="anthropic",
+                )
+        elif active_provider == AIProvider.LITELLM:
+            if ai_config.litellm.enabled:
+                # LiteLLM uses environment variable or app-provided key
+                return LLMConfig(
+                    api_key=settings.effective_llm_api_key,  # May be None
+                    model=ai_config.litellm.model,
+                    provider="litellm",
+                )
+    except Exception as e:
+        logger.debug(f"Could not load AI config, falling back to env vars: {e}")
+
+    # Fall back to environment variables (backward compatibility)
+    if settings.effective_llm_api_key:
+        return LLMConfig(
+            api_key=settings.effective_llm_api_key,
+            model=settings.effective_llm_model,
+            provider="litellm",  # Env vars use LiteLLM
+        )
+
+    logger.error("LLM API key not configured")
+    raise HTTPException(
+        status_code=500,
+        detail="LLM API key not configured. Configure a provider in Settings or set HBC_LLM_API_KEY.",
+    )
 
 
 def require_llm_configured() -> str:
@@ -140,13 +418,23 @@ def require_llm_configured() -> str:
     Raises:
         HTTPException: 500 if LLM API key is not configured.
     """
-    if not settings.effective_llm_api_key:
-        logger.error("LLM API key not configured")
-        raise HTTPException(
-            status_code=500,
-            detail="LLM API key not configured. Set HBC_LLM_API_KEY or HBC_OPENAI_API_KEY.",
-        )
-    return settings.effective_llm_api_key
+    config = get_llm_config()
+    # For providers that don't need API key (Ollama), return empty string
+    return config.api_key or ""
+
+
+def get_configured_llm() -> LLMConfig:
+    """Dependency that returns the full LLM configuration.
+
+    Use this when you need both the API key and model from the configured provider.
+
+    Returns:
+        LLMConfig with api_key, model, and provider.
+
+    Raises:
+        HTTPException: 500 if no LLM is properly configured.
+    """
+    return get_llm_config()
 
 
 async def validate_file_size(file: UploadFile) -> bytes:
@@ -207,7 +495,7 @@ async def get_labels_for_context(token: str) -> list[dict[str, str]]:
         List of label dicts with 'id' and 'name' keys.
 
     Raises:
-        AuthenticationError: If authentication fails (re-raised to caller).
+        HomeboxAuthError: If authentication fails (re-raised to caller).
         RuntimeError: If the API returns an unexpected error (not transient).
     """
     client = get_client()
@@ -218,7 +506,7 @@ async def get_labels_for_context(token: str) -> list[dict[str, str]]:
             for label in raw_labels
             if label.get("id") and label.get("name")
         ]
-    except AuthenticationError:
+    except HomeboxAuthError:
         # Re-raise auth errors - session is invalid and caller needs to know
         logger.warning("Authentication failed while fetching labels for AI context")
         raise
@@ -286,7 +574,9 @@ async def get_vision_context(
         logger.debug("Using field preferences from X-Field-Preferences header (demo mode)")
         try:
             prefs_dict = json.loads(x_field_preferences)
-            prefs = FieldPreferences.model_validate(prefs_dict)
+            # Filter out None values - let model defaults fill in missing fields
+            filtered = {k: v for k, v in prefs_dict.items() if v is not None}
+            prefs = FieldPreferences.model_validate(filtered)
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning(f"Invalid field preferences in header, ignoring: {e}")
             prefs = load_field_preferences()

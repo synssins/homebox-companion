@@ -1,46 +1,46 @@
-"""Data models for vision-based item detection."""
+"""Data models for vision-based item detection.
+
+Pydantic models for representing items detected by AI vision.
+LiteLLM supports Pydantic models for structured output, so we define
+DetectedItem as a Pydantic BaseModel for automatic validation.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import dataclass
+from typing import Annotated, Iterable
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
-@dataclass
-class DetectedItem:
+class DetectedItem(BaseModel):
     """Structured representation for objects detected in an image.
 
     This class represents an item that has been identified by the AI vision
-    model and can be created in Homebox.
+    model and can be created in Homebox. LiteLLM will validate the LLM output
+    against this schema automatically.
 
-    Attributes:
-        name: The item name (max 255 characters).
-        quantity: Number of this item detected (default: 1).
-        description: Optional description of the item (max 1000 characters).
-        location_id: Optional Homebox location ID where the item should be stored.
-        label_ids: Optional list of Homebox label IDs to attach to the item.
-
-    Extended fields (require update after creation):
-        manufacturer: Brand/manufacturer name when visible on the item.
-        model_number: Model or part number when visible on labels/packaging.
-        serial_number: Serial number when visible on stickers/engravings.
-        purchase_price: Price when visible on tags/receipts.
-        purchase_from: Retailer name when visible on packaging/receipts.
-        notes: Notable observations about condition, wear, or special features.
+    Extended fields (manufacturer, model_number, etc.) require an update
+    after item creation since Homebox API doesn't accept them during POST.
     """
 
-    name: str
-    quantity: int
-    description: str | None = None
-    location_id: str | None = None
-    label_ids: list[str] | None = None
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: Annotated[str, Field(min_length=1, max_length=255)]
+    quantity: int = Field(default=1, ge=1)
+    description: Annotated[str, Field(max_length=1000)] | None = None
+    location_id: str | None = Field(default=None, alias="locationId")
+    label_ids: list[str] | None = Field(default=None, alias="labelIds")
+
     # Extended fields (can only be set via update, not create)
-    manufacturer: str | None = None
-    model_number: str | None = None
-    serial_number: str | None = None
-    purchase_price: float | None = None
-    purchase_from: str | None = None
-    notes: str | None = None
+    manufacturer: Annotated[str, Field(max_length=255)] | None = None
+    model_number: Annotated[str, Field(max_length=255)] | None = Field(default=None, alias="modelNumber")
+    serial_number: Annotated[str, Field(max_length=255)] | None = Field(default=None, alias="serialNumber")
+    purchase_price: float | None = Field(default=None, gt=0, alias="purchasePrice")
+    purchase_from: Annotated[str, Field(max_length=255)] | None = Field(default=None, alias="purchaseFrom")
+    notes: Annotated[str, Field(max_length=1000)] | None = None
+
+    # Grouping field (used only in grouped/batch detection)
+    image_indices: list[int] | None = None
 
     def to_create_payload(self) -> dict[str, str | int | list[str]]:
         """Convert to payload for Homebox item creation API.
@@ -78,44 +78,26 @@ class DetectedItem:
 
         Returns:
             A dictionary with extended fields if any are present, or None.
-            Empty strings after stripping whitespace are excluded.
         """
-        payload: dict[str, str | float] = {}
-
-        if self.manufacturer:
-            value = str(self.manufacturer).strip()[:255]
-            if value:  # Exclude empty strings after strip
-                payload["manufacturer"] = value
-        if self.model_number:
-            value = str(self.model_number).strip()[:255]
-            if value:
-                payload["modelNumber"] = value
-        if self.serial_number:
-            value = str(self.serial_number).strip()[:255]
-            if value:
-                payload["serialNumber"] = value
-        if self.purchase_price is not None and self.purchase_price > 0:
-            payload["purchasePrice"] = self.purchase_price
-        if self.purchase_from:
-            value = str(self.purchase_from).strip()[:255]
-            if value:
-                payload["purchaseFrom"] = value
-        if self.notes:
-            value = str(self.notes).strip()[:1000]
-            if value:
-                payload["notes"] = value
-
+        payload = self.model_dump(
+            by_alias=True,
+            exclude_unset=True,
+            exclude_none=True,
+            include={"manufacturer", "model_number", "serial_number", "purchase_price", "purchase_from", "notes"},
+        )
         return payload if payload else None
 
     def has_extended_fields(self) -> bool:
         """Check if this item has any extended fields that need updating."""
-        return bool(
-            self.manufacturer
-            or self.model_number
-            or self.serial_number
-            or (self.purchase_price is not None and self.purchase_price > 0)
-            or self.purchase_from
-            or self.notes
+        from ...homebox.models import has_extended_fields
+
+        return has_extended_fields(
+            self.manufacturer,
+            self.model_number,
+            self.serial_number,
+            self.purchase_price,
+            self.purchase_from,
+            self.notes,
         )
 
     @staticmethod
@@ -192,6 +174,15 @@ class DetectedItem:
             elif notes:
                 notes = str(notes).strip()
 
+            # Parse image_indices for grouped detection
+            raw_indices = item.get("imageIndices") or item.get("image_indices")
+            image_indices: list[int] | None = None
+            if isinstance(raw_indices, Iterable) and not isinstance(raw_indices, (str, bytes)):
+                try:
+                    image_indices = [int(idx) for idx in raw_indices]
+                except (TypeError, ValueError):
+                    image_indices = None
+
             detected.append(
                 DetectedItem(
                     name=name,
@@ -204,6 +195,7 @@ class DetectedItem:
                     purchase_price=purchase_price,
                     purchase_from=purchase_from,
                     notes=notes,
+                    image_indices=image_indices,
                 )
             )
         return detected

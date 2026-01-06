@@ -1,24 +1,31 @@
 <script lang="ts">
-	import { goto } from "$app/navigation";
-	import { onMount } from "svelte";
-	import { vision } from "$lib/api/vision";
-	import { labelStore } from "$lib/stores/labels.svelte";
-	import { showToast } from "$lib/stores/ui.svelte";
-	import { scanWorkflow } from "$lib/workflows/scan.svelte";
-	import { createObjectUrlManager } from "$lib/utils/objectUrl";
-	import { routeGuards } from "$lib/utils/routeGuard";
-	import type { ReviewItem } from "$lib/types";
-	import Button from "$lib/components/Button.svelte";
-	import StepIndicator from "$lib/components/StepIndicator.svelte";
-	import ThumbnailEditor from "$lib/components/ThumbnailEditor.svelte";
-	import ExtendedFieldsPanel from "$lib/components/ExtendedFieldsPanel.svelte";
-	import ImagesPanel from "$lib/components/ImagesPanel.svelte";
-	import AiCorrectionPanel from "$lib/components/AiCorrectionPanel.svelte";
-	import BackLink from "$lib/components/BackLink.svelte";
-	import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
-	import { workflowLogger as log } from "$lib/utils/logger";
-	import { expandable } from "$lib/actions/expandable";
-	import { longpress } from "$lib/actions/longpress";
+	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
+	import { onMount, onDestroy } from 'svelte';
+	import { vision } from '$lib/api/vision';
+	import { getConfig } from '$lib/api/settings';
+	import { showToast } from '$lib/stores/ui.svelte';
+	import { scanWorkflow } from '$lib/workflows/scan.svelte';
+	import { createObjectUrlManager } from '$lib/utils/objectUrl';
+	import { routeGuards } from '$lib/utils/routeGuard';
+	import { getInitPromise } from '$lib/services/tokenRefresh';
+	import type { ReviewItem } from '$lib/types';
+	import Button from '$lib/components/Button.svelte';
+	import StepIndicator from '$lib/components/StepIndicator.svelte';
+	import ThumbnailEditor from '$lib/components/ThumbnailEditor.svelte';
+	import { ItemCoreFields, ItemExtendedFields, LabelSelector } from '$lib/components/form';
+	import AppContainer from '$lib/components/AppContainer.svelte';
+	import ImagesPanel from '$lib/components/ImagesPanel.svelte';
+	import AiCorrectionPanel from '$lib/components/AiCorrectionPanel.svelte';
+	import BackLink from '$lib/components/BackLink.svelte';
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+	import DuplicateWarningBanner from '$lib/components/DuplicateWarningBanner.svelte';
+	import { workflowLogger as log } from '$lib/utils/logger';
+	import { longpress } from '$lib/actions/longpress';
+
+	// Capture limits (loaded from config, with safe defaults)
+	let maxImages = $state(30);
+	let maxFileSizeMb = $state(10);
 
 	// Get workflow reference
 	const workflow = scanWorkflow;
@@ -30,8 +37,13 @@
 	const detectedItems = $derived(workflow.state.detectedItems);
 	const currentIndex = $derived(workflow.state.currentReviewIndex);
 	const currentItem = $derived(workflow.currentItem);
-	const confirmedItems = $derived(workflow.state.confirmedItems);
 	const images = $derived(workflow.state.images);
+	const duplicateMatches = $derived(workflow.state.duplicateMatches);
+
+	// Get duplicate warning for current item (if any)
+	const currentItemDuplicate = $derived(
+		duplicateMatches.find((match) => match.item_index === currentIndex),
+	);
 
 	// Local UI state
 	let editedItem = $state<ReviewItem | null>(null);
@@ -57,19 +69,6 @@
 			item.purchase_from ||
 			item.notes
 		);
-	}
-
-	// Count extended fields with data
-	function countExtendedFields(item: ReviewItem | null): number {
-		if (!item) return 0;
-		let count = 0;
-		if (item.manufacturer) count++;
-		if (item.model_number) count++;
-		if (item.serial_number) count++;
-		if (item.purchase_price) count++;
-		if (item.purchase_from) count++;
-		if (item.notes) count++;
-		return count;
 	}
 
 	// Sync editedItem when currentItem changes
@@ -117,38 +116,63 @@
 		}
 	}
 
-	// Apply route guard and setup cleanup
-	onMount(() => {
+	// Apply route guard
+	onMount(async () => {
+		// Wait for auth initialization to complete to avoid race conditions
+		// where we check isAuthenticated before initializeAuth clears expired tokens
+		await getInitPromise();
+
 		if (!routeGuards.review()) return;
-		// Cleanup object URLs only on component unmount
-		return () => urlManager.cleanup();
+
+		// Load capture limits from config
+		try {
+			const config = await getConfig();
+			maxImages = config.capture_max_images;
+			maxFileSizeMb = config.capture_max_file_size_mb;
+		} catch (error) {
+			log.warn('Failed to load capture config, using defaults', error);
+		}
 	});
 
-	// Watch for status changes
+	// Cleanup object URLs on component unmount
+	onDestroy(() => urlManager.cleanup());
+
+	// Track previous status to detect transitions (prevents infinite loops)
+	let previousStatus = $state<string | null>(null);
+
+	// Watch for status changes and navigate accordingly
+	// Uses transition detection to ensure we only act once per status change
 	$effect(() => {
-		if (workflow.state.status === "confirming") {
-			goto("/summary");
+		const currentStatus = workflow.state.status;
+
+		// Only act on actual transitions, not repeated reads
+		if (currentStatus === previousStatus) return;
+
+		const wasReviewing = previousStatus === 'reviewing';
+		previousStatus = currentStatus;
+
+		// Only navigate if we were reviewing and status changed
+		if (!wasReviewing) return;
+
+		if (currentStatus === 'confirming') {
+			goto(resolve('/summary'));
+		} else if (currentStatus === 'capturing') {
+			// All items were skipped - go back to capture with a message
+			showToast('All items were skipped. Add more photos to continue.', 'info');
+			goto(resolve('/capture'));
 		}
 	});
 
 	function goBack() {
 		workflow.backToCapture();
-		goto("/capture");
-	}
-
-	function previousItem() {
-		workflow.previousItem();
-	}
-
-	function nextItem() {
-		workflow.nextItem();
+		goto(resolve('/capture'));
 	}
 
 	function skipItem() {
 		workflow.skipItem();
 
 		// Scroll to top for next item
-		window.scrollTo({ top: 0, behavior: "smooth" });
+		window.scrollTo({ top: 0, behavior: 'smooth' });
 	}
 
 	/**
@@ -167,10 +191,14 @@
 			for (const img of allImages) {
 				if (!originalImageSet.has(img)) return true;
 			}
-			// Check if order changed (first image determines primary compressed URL)
-			const originalPrimary = currentItem?.originalFile;
-			if (originalPrimary && allImages[0] !== originalPrimary)
-				return true;
+			// Check if order changed - compare full array order, not just primary
+			// This ensures reordering additional images also invalidates compressed data
+			const originalArray = currentItem?.originalFile
+				? [currentItem.originalFile, ...(currentItem.additionalImages || [])]
+				: [];
+			for (let i = 0; i < allImages.length; i++) {
+				if (allImages[i] !== originalArray[i]) return true;
+			}
 			return false;
 		})();
 
@@ -202,7 +230,7 @@
 		workflow.confirmItem(item);
 
 		// Scroll to top for next item
-		window.scrollTo({ top: 0, behavior: "smooth" });
+		window.scrollTo({ top: 0, behavior: 'smooth' });
 	}
 
 	function handleLongPressConfirm() {
@@ -218,7 +246,7 @@
 		showConfirmAllDialog = false;
 
 		// Navigate to summary
-		goto("/summary");
+		goto(resolve('/summary'));
 	}
 
 	// Calculate remaining items count for dialog
@@ -235,35 +263,12 @@
 		}
 	}
 
-	// Track touch state per label chip to prevent double-firing
-	let touchedLabelIds = $state<Set<string>>(new Set());
-
-	function handleLabelTouchEnd(e: TouchEvent, labelId: string) {
-		// Prevent synthetic click event from firing
-		e.preventDefault();
-		
-		// Mark this specific chip as touched
-		touchedLabelIds = new Set([...touchedLabelIds, labelId]);
-		toggleLabel(labelId);
-		
-		// Reset after click event would have fired (300ms is iOS click delay)
-		setTimeout(() => {
-			touchedLabelIds = new Set([...touchedLabelIds].filter(id => id !== labelId));
-		}, 300);
-	}
-
-	function handleLabelClick(labelId: string) {
-		// Prevent double-fire if this specific chip was just touched
-		if (touchedLabelIds.has(labelId)) return;
-		toggleLabel(labelId);
-	}
-
 	async function handleAiCorrection(correctionPrompt: string) {
 		if (!editedItem) return;
 
 		const sourceImage = images[editedItem.sourceImageIndex];
 		if (!sourceImage) {
-			showToast("Original image not found", "error");
+			showToast('Original image not found', 'error');
 			return;
 		}
 
@@ -283,7 +288,7 @@
 					purchase_from: editedItem.purchase_from,
 					notes: editedItem.notes,
 				},
-				correctionPrompt,
+				correctionPrompt
 			);
 
 			if (response.items.length > 0) {
@@ -306,22 +311,20 @@
 				showAiCorrection = false;
 			}
 		} catch (error) {
-			log.error("AI correction failed:", error);
-			showToast(
-				error instanceof Error ? error.message : "Correction failed",
-				"error",
-			);
+			log.error('AI correction failed:', error);
+			showToast(error instanceof Error ? error.message : 'Correction failed', 'error');
 		} finally {
 			isProcessing = false;
 		}
 	}
 
-	function getAvailableImages(): { file: File; dataUrl: string }[] {
-		return allImages.map((file) => ({
+	// Derived images with data URLs for thumbnail editor
+	const availableImages = $derived(
+		allImages.map((file) => ({
 			file,
 			dataUrl: urlManager.getUrl(file),
-		}));
-	}
+		}))
+	);
 
 	// Open thumbnail editor
 	function openThumbnailEditor() {
@@ -333,7 +336,7 @@
 	function handleThumbnailSave(
 		dataUrl: string,
 		sourceImageIndex: number,
-		transform: import("$lib/types").ThumbnailTransform,
+		transform: import('$lib/types').ThumbnailTransform
 	) {
 		if (!editedItem) return;
 
@@ -356,12 +359,13 @@
 		showThumbnailEditor = false;
 	}
 
-	function getDisplayThumbnail(): string | null {
+	// Derived display thumbnail - custom takes precedence, then first image
+	const displayThumbnail = $derived.by(() => {
 		if (!editedItem) return null;
 		if (editedItem.customThumbnail) return editedItem.customThumbnail;
 		if (allImages.length > 0) return urlManager.getUrl(allImages[0]);
 		return null;
-	}
+	});
 
 	// Sync object URLs when images change (cleanup removed files only)
 	$effect(() => {
@@ -376,59 +380,53 @@
 <div class="animate-in pb-32">
 	<StepIndicator currentStep={3} />
 
-	<h2 class="text-h2 text-neutral-100 mb-1">Review Items</h2>
-	<p class="text-body-sm text-neutral-400 mb-6">
-		Edit or skip detected items
-	</p>
+	<h2 class="mb-1 text-h2 text-neutral-100">Review Items</h2>
+	<p class="mb-6 text-body-sm text-neutral-400">Edit or skip detected items</p>
 
-	<BackLink
-		href="/capture"
-		label="Back to Capture"
-		onclick={goBack}
-		disabled={isProcessing}
-	/>
+	<BackLink href="/capture" label="Back to Capture" onclick={goBack} disabled={isProcessing} />
+
+	<!-- Duplicate warning for current item -->
+	{#if currentItemDuplicate}
+		<div class="mb-4">
+			<DuplicateWarningBanner
+				duplicates={[currentItemDuplicate]}
+				compact={true}
+			/>
+		</div>
+	{/if}
 
 	{#if editedItem}
-		{@const displayThumbnail = getDisplayThumbnail()}
-		{@const extendedFieldCount = countExtendedFields(editedItem)}
+		{@const thumbnail = displayThumbnail}
 
 		<div
-			class="bg-neutral-900 rounded-2xl border border-neutral-700 shadow-md overflow-hidden mb-4"
+			class="mb-4 overflow-hidden rounded-2xl border border-neutral-700 bg-neutral-900 shadow-md"
 		>
 			<!-- Thumbnail section -->
-			{#if displayThumbnail}
-				<div class="aspect-video bg-neutral-800 relative group">
-					<img
-						src={displayThumbnail}
-						alt={editedItem.name}
-						class="w-full h-full object-contain"
-					/>
+			{#if thumbnail}
+				<div class="group relative aspect-video bg-neutral-800">
+					<img src={thumbnail} alt={editedItem.name} class="h-full w-full object-contain" />
 					<!-- Edit overlay - always visible on mobile, hover on desktop -->
 					<button
 						type="button"
-						class="absolute bottom-3 right-3 px-3 py-2.5 min-h-[44px] bg-black/70 hover:bg-black/90 rounded-lg text-white text-sm flex items-center gap-2 transition-all md:opacity-0 md:group-hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-white/50"
+						class="absolute bottom-3 right-3 flex min-h-[44px] items-center gap-2 rounded-lg bg-black/70 px-3 py-2.5 text-sm text-white transition-all hover:bg-black/90 focus:outline-none focus:ring-2 focus:ring-white/50 md:opacity-0 md:group-hover:opacity-100"
 						onclick={openThumbnailEditor}
 						aria-label="Edit thumbnail image"
 					>
 						<svg
-							class="w-4 h-4"
+							class="h-4 w-4"
 							fill="none"
 							stroke="currentColor"
 							viewBox="0 0 24 24"
 							stroke-width="1.5"
 						>
-							<path
-								d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"
-							/>
-							<path
-								d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"
-							/>
+							<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+							<path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
 						</svg>
 						<span>Edit Thumbnail</span>
 					</button>
 					{#if editedItem.customThumbnail}
 						<span
-							class="absolute top-3 left-3 px-2 py-1 bg-primary-600/90 rounded text-xs text-white font-medium"
+							class="absolute left-3 top-3 rounded bg-primary-600/90 px-2 py-1 text-xs font-medium text-white"
 						>
 							Custom
 						</span>
@@ -437,102 +435,47 @@
 			{:else}
 				<!-- No image placeholder -->
 				<div
-					class="aspect-video bg-neutral-800 flex flex-col items-center justify-center text-neutral-500"
+					class="flex aspect-video flex-col items-center justify-center bg-neutral-800 text-neutral-500"
 				>
 					<svg
-						class="w-16 h-16 mb-2 opacity-40"
+						class="mb-2 h-16 w-16 opacity-40"
 						fill="none"
 						stroke="currentColor"
 						viewBox="0 0 24 24"
 						stroke-width="1"
 					>
-						<rect
-							x="3"
-							y="3"
-							width="18"
-							height="18"
-							rx="2"
-							ry="2"
-						/>
+						<rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
 						<circle cx="8.5" cy="8.5" r="1.5" />
 						<polyline points="21 15 16 10 5 21" />
 					</svg>
 					<p class="text-body-sm">No image available</p>
-					<p class="text-caption mt-1">Add photos below</p>
+					<p class="mt-1 text-caption">Add photos below</p>
 				</div>
 			{/if}
 
-			<div class="p-4 space-y-5">
-				<!-- Name field -->
-				<div>
-					<label for="itemName" class="label">Name</label>
-					<textarea
-						id="itemName"
-						bind:value={editedItem.name}
-						rows="1"
-						class="input-expandable"
-						use:expandable
-					></textarea>
-				</div>
-
-				<!-- Quantity field -->
-				<div>
-					<label for="itemQuantity" class="label">Quantity</label>
-					<input
-						type="number"
-						id="itemQuantity"
-						min="1"
-						bind:value={editedItem.quantity}
-						class="input w-24"
-					/>
-				</div>
-
-				<!-- Description field -->
-				<div>
-					<label for="itemDescription" class="label"
-						>Description</label
-					>
-					<textarea
-						id="itemDescription"
-						bind:value={editedItem.description}
-						rows="1"
-						class="input-expandable"
-						use:expandable
-					></textarea>
-				</div>
+			<div class="space-y-5 p-4">
+				<!-- Core fields: name, quantity, description -->
+				<ItemCoreFields
+					bind:name={editedItem.name}
+					bind:quantity={editedItem.quantity}
+					bind:description={editedItem.description}
+					idPrefix="review"
+				/>
 
 				<!-- Labels with chip selection -->
-				{#if labelStore.labels.length > 0}
-					<div>
-						<span class="label">Labels</span>
-						<div
-							class="flex flex-wrap gap-2"
-							role="group"
-							aria-label="Select labels"
-						>
-							{#each labelStore.labels as label}
-								{@const isSelected =
-									editedItem.label_ids?.includes(label.id)}
-								<button
-									type="button"
-									class={isSelected
-										? "label-chip-selected"
-										: "label-chip"}
-									onclick={() => handleLabelClick(label.id)}
-									ontouchend={(e) => handleLabelTouchEnd(e, label.id)}
-								>
-									{label.name}
-								</button>
-							{/each}
-						</div>
-					</div>
-				{/if}
+				<LabelSelector selectedIds={editedItem.label_ids ?? []} onToggle={toggleLabel} />
 
-				<!-- Extended fields panel with count indicator -->
-				<ExtendedFieldsPanel
-					bind:item={editedItem}
+				<!-- Extended fields panel -->
+				<ItemExtendedFields
+					bind:manufacturer={editedItem.manufacturer}
+					bind:modelNumber={editedItem.model_number}
+					bind:serialNumber={editedItem.serial_number}
+					bind:purchasePrice={editedItem.purchase_price}
+					bind:purchaseFrom={editedItem.purchase_from}
+					bind:notes={editedItem.notes}
 					expanded={showExtendedFields}
 					onToggle={toggleExtendedFields}
+					idPrefix="review"
 				/>
 
 				<!-- Images panel -->
@@ -546,6 +489,8 @@
 					}}
 					expanded={showImagesPanel}
 					onToggle={toggleImagesPanel}
+					{maxFileSizeMb}
+					{maxImages}
 				/>
 
 				<!-- AI Correction panel -->
@@ -564,7 +509,6 @@
 	{/if}
 
 	{#if showThumbnailEditor && editedItem && allImages.length > 0}
-		{@const availableImages = getAvailableImages()}
 		<ThumbnailEditor
 			images={availableImages}
 			itemName={editedItem.name}
@@ -579,9 +523,9 @@
 <!-- Sticky action footer -->
 {#if editedItem}
 	<div
-		class="fixed bottom-nav-offset left-0 right-0 bg-neutral-900/95 backdrop-blur-lg border-t border-neutral-700 z-40"
+		class="bottom-nav-offset fixed left-0 right-0 z-40 border-t border-neutral-700 bg-neutral-900/95 backdrop-blur-lg"
 	>
-		<div class="max-w-lg mx-auto">
+		<AppContainer>
 			<!-- Item counter in footer for mobile - positioned above bottom nav -->
 			<div class="flex items-center justify-center py-3 md:hidden">
 				<span class="text-body-sm font-medium text-neutral-300">
@@ -591,14 +535,9 @@
 			<!-- Action buttons -->
 			<div class="flex gap-3 px-4 pb-4">
 				<div class="flex-1">
-					<Button
-						variant="secondary"
-						full
-						onclick={skipItem}
-						disabled={isProcessing}
-					>
+					<Button variant="secondary" full onclick={skipItem} disabled={isProcessing}>
 						<svg
-							class="w-5 h-5"
+							class="h-5 w-5"
 							fill="none"
 							stroke="currentColor"
 							viewBox="0 0 24 24"
@@ -611,16 +550,11 @@
 				</div>
 				<div
 					class="flex-1"
-					use:longpress={{ onLongPress: handleLongPressConfirm }}
+					use:longpress={{ onLongPress: handleLongPressConfirm, disabled: isProcessing }}
 				>
-					<Button
-						variant="primary"
-						full
-						onclick={confirmItem}
-						disabled={isProcessing}
-					>
+					<Button variant="primary" full onclick={confirmItem} disabled={isProcessing}>
 						<svg
-							class="w-5 h-5"
+							class="h-5 w-5"
 							fill="none"
 							stroke="currentColor"
 							viewBox="0 0 24 24"
@@ -632,7 +566,7 @@
 					</Button>
 				</div>
 			</div>
-		</div>
+		</AppContainer>
 	</div>
 {/if}
 

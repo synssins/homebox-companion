@@ -12,9 +12,8 @@ import json
 import httpx
 import pytest
 
-from homebox_companion.core.exceptions import AuthenticationError
+from homebox_companion.core.exceptions import HomeboxAPIError, HomeboxAuthError
 from homebox_companion.homebox.client import HomeboxClient
-from homebox_companion.tools.vision.models import DetectedItem
 
 # All tests in this module are unit tests (mocked httpx, tmp_path for files)
 pytestmark = pytest.mark.unit
@@ -24,43 +23,43 @@ class TestHomeboxClientErrorHandling:
     """Test HTTP error handling in HomeboxClient."""
 
     def test_401_response_raises_authentication_error(self) -> None:
-        """401 responses should raise AuthenticationError."""
+        """401 responses should raise HomeboxAuthError."""
         response = httpx.Response(
             401,
             json={"error": "Token expired"},
         )
 
-        with pytest.raises(AuthenticationError, match="Token expired"):
+        with pytest.raises(HomeboxAuthError, match="Token expired"):
             HomeboxClient._ensure_success(response, "Test operation")
 
-    def test_404_response_raises_runtime_error(self) -> None:
-        """404 responses should raise RuntimeError with status code."""
+    def test_404_response_raises_homebox_api_error(self) -> None:
+        """404 responses should raise HomeboxAPIError with status code."""
         response = httpx.Response(
             404,
             json={"error": "Not found"},
         )
 
-        with pytest.raises(RuntimeError, match="404"):
+        with pytest.raises(HomeboxAPIError, match="404"):
             HomeboxClient._ensure_success(response, "Fetch item")
 
-    def test_500_response_raises_runtime_error(self) -> None:
-        """500 responses should raise RuntimeError with status code."""
+    def test_500_response_raises_homebox_api_error(self) -> None:
+        """500 responses should raise HomeboxAPIError with status code."""
         response = httpx.Response(
             500,
             json={"error": "Internal server error"},
         )
 
-        with pytest.raises(RuntimeError, match="500"):
+        with pytest.raises(HomeboxAPIError, match="500"):
             HomeboxClient._ensure_success(response, "Create item")
 
     def test_malformed_json_response_raises_with_text(self) -> None:
-        """Non-JSON responses should raise error with text content."""
+        """Non-JSON responses should raise HomeboxAPIError with text content."""
         response = httpx.Response(
             400,
             text="Bad request - invalid format",
         )
 
-        with pytest.raises(RuntimeError, match="Bad request"):
+        with pytest.raises(HomeboxAPIError, match="Bad request"):
             HomeboxClient._ensure_success(response, "Update item")
 
     def test_success_response_does_not_raise(self) -> None:
@@ -79,86 +78,6 @@ class TestHomeboxClientErrorHandling:
 
         # Should not raise
         HomeboxClient._ensure_success(response, "Delete operation")
-
-
-class TestDetectedItemInvalidInput:
-    """Test DetectedItem handling of invalid/malformed input data."""
-
-    def test_nested_invalid_label_data_filtered(self) -> None:
-        """Invalid nested data in labelIds should be filtered gracefully."""
-        raw_items = [
-            {
-                "name": "Item 1",
-                "quantity": 1,
-                "labelIds": ["valid-1", {"nested": "dict"}, None, "valid-2"],
-            },
-        ]
-
-        items = DetectedItem.from_raw_items(raw_items)
-
-        assert len(items) == 1
-        # Invalid entries should be converted to strings or filtered
-        assert items[0].label_ids is not None
-        assert "valid-1" in items[0].label_ids
-        assert "valid-2" in items[0].label_ids
-
-    def test_extremely_long_name_truncates(self) -> None:
-        """Extremely long names should truncate without crashing."""
-        long_name = "x" * 10000  # 10k characters
-        item = DetectedItem(name=long_name, quantity=1)
-
-        payload = item.to_create_payload()
-
-        # Should truncate to 255
-        assert len(payload["name"]) == 255
-
-    def test_extremely_long_description_truncates(self) -> None:
-        """Extremely long descriptions should truncate without crashing."""
-        long_desc = "y" * 50000  # 50k characters
-        item = DetectedItem(name="Item", quantity=1, description=long_desc)
-
-        payload = item.to_create_payload()
-
-        # Should truncate to 1000
-        assert len(payload["description"]) == 1000
-
-    def test_negative_quantity_normalizes_to_one(self) -> None:
-        """Negative quantities should normalize to 1."""
-        raw_items = [
-            {"name": "Item 1", "quantity": -5},
-            {"name": "Item 2", "quantity": -1},
-        ]
-
-        items = DetectedItem.from_raw_items(raw_items)
-
-        assert items[0].quantity == 1
-        assert items[1].quantity == 1
-
-    def test_float_quantity_converts_to_int(self) -> None:
-        """Float quantities should convert to integers."""
-        raw_items = [
-            {"name": "Item 1", "quantity": 3.7},
-            {"name": "Item 2", "quantity": 5.2},
-        ]
-
-        items = DetectedItem.from_raw_items(raw_items)
-
-        assert items[0].quantity == 3
-        assert items[1].quantity == 5
-
-    def test_missing_required_keys_handled_gracefully(self) -> None:
-        """Items missing name should be filtered; missing quantity defaults."""
-        raw_items = [
-            {},  # Missing everything
-            {"quantity": 5},  # Missing name
-            {"name": "Valid"},  # Missing quantity (should default to 1)
-        ]
-
-        items = DetectedItem.from_raw_items(raw_items)
-
-        assert len(items) == 1
-        assert items[0].name == "Valid"
-        assert items[0].quantity == 1
 
 
 class TestFieldPreferencesFileCorruption:
@@ -210,23 +129,3 @@ class TestFieldPreferencesFileCorruption:
         prefs = field_preferences.load_field_preferences()
         assert isinstance(prefs, field_preferences.FieldPreferences)
         assert prefs.output_language == "English"
-
-
-class TestVisionDetectionErrorHandling:
-    """Test vision detection handling of malformed/invalid responses."""
-
-    def test_empty_items_list_returns_empty_result(self) -> None:
-        """Response with empty items list should return empty list."""
-        raw_response = {"items": []}
-
-        items = DetectedItem.from_raw_items(raw_response.get("items", []))
-
-        assert items == []
-
-    def test_missing_items_key_returns_empty_result(self) -> None:
-        """Response missing 'items' key should return empty list."""
-        raw_response = {"data": "something else"}
-
-        items = DetectedItem.from_raw_items(raw_response.get("items", []))
-
-        assert items == []

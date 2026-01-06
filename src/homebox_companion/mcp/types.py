@@ -1,0 +1,192 @@
+"""Core types for MCP tool definitions.
+
+This module contains the shared types used across MCP tool implementations:
+- ToolPermission: Enum for tool permission levels
+- ToolParams: Base class for tool parameter models
+- ToolResult: Standard result wrapper for tool execution
+- Tool: Protocol defining the tool contract
+"""
+
+from __future__ import annotations
+
+from enum import Enum
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
+
+from pydantic import BaseModel, ConfigDict
+
+if TYPE_CHECKING:
+    from ..homebox.client import HomeboxClient
+
+__all__ = [
+    "ToolPermission",
+    "ToolParams",
+    "ToolResult",
+    "Tool",
+    "DisplayInfo",
+]
+
+
+
+
+class ToolPermission(str, Enum):
+    """Permission level required to execute a tool.
+
+    READ: Safe to auto-execute, no side effects
+    WRITE: Modifies data, requires user approval
+    DESTRUCTIVE: Deletes data, requires approval + confirmation
+    """
+
+    READ = "read"
+    WRITE = "write"
+    DESTRUCTIVE = "destructive"
+
+
+class ToolParams(BaseModel):
+    """Base class for tool parameter models.
+
+    All tool Params inner classes should inherit from this to ensure
+    consistent configuration (extra="forbid" catches typos in param names).
+    """
+
+    model_config = ConfigDict(
+        populate_by_name=True,
+        extra="forbid",  # Reject unknown parameters
+    )
+
+
+ActionType = Literal["create", "update", "delete"]
+
+
+def get_action_type_from_tool_name(tool_name: str) -> ActionType:
+    """Derive action type from tool name convention.
+
+    Tool names follow the pattern: {action}_{target} (e.g., create_item, delete_label).
+    This function extracts the action prefix to determine the UI action type.
+
+    Args:
+        tool_name: The tool name (e.g., "create_item", "update_location")
+
+    Returns:
+        The action type: 'create', 'update', or 'delete'
+    """
+    if tool_name.startswith("create_"):
+        return "create"
+    if tool_name.startswith("delete_"):
+        return "delete"
+    # Default to 'update' for update_*, upload_*, ensure_*, etc.
+    return "update"
+
+
+class DisplayInfo(BaseModel):
+    """Human-readable display info for approval actions.
+
+    Used by the approval UI to show user-friendly details about
+    the action being approved (e.g., item name, location, action type).
+    """
+
+    model_config = ConfigDict(extra="allow")  # Allow additional fields
+
+    action_type: ActionType | None = None  # Derived from tool name: create, update, delete
+    target_name: str | None = None  # Name of the target being operated on (item, location, label)
+    item_name: str | None = None  # Kept for backward compatibility with item operations
+    asset_id: str | None = None
+    location: str | None = None
+
+
+class ToolResult(BaseModel):
+    """Standard result wrapper for tool execution.
+
+    Attributes:
+        success: Whether the operation succeeded
+        data: The result data (on success) or None
+        error: Error message (on failure) or None
+        metadata: Optional additional metadata (auto-computed if not provided)
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    success: bool
+    data: Any = None
+    error: str | None = None
+    metadata: dict[str, Any] | None = None
+
+    def _compute_metadata(self) -> dict[str, Any]:
+        """Compute metadata based on the data type.
+
+        Returns:
+            Dictionary with computed metadata fields.
+        """
+        meta: dict[str, Any] = {}
+
+        if self.data is None:
+            return meta
+
+        if isinstance(self.data, list):
+            meta["count"] = len(self.data)
+            meta["type"] = "list"
+        elif isinstance(self.data, dict):
+            meta["type"] = "object"
+            # Include name if present (common in single item results)
+            if "name" in self.data:
+                meta["name"] = self.data["name"]
+            # Include count for nested lists (e.g., {"items_updated": 5})
+            for key in ("items_updated", "count"):
+                if key in self.data:
+                    meta["count"] = self.data[key]
+                    break
+
+        return meta
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for MCP response.
+
+        Automatically includes metadata about the result (count, type, etc.)
+        to help the AI understand the scope of the response.
+        """
+        if self.success:
+            # Merge explicit metadata with computed metadata
+            computed = self._compute_metadata()
+            final_meta = {**computed, **(self.metadata or {})}
+
+            result: dict[str, Any] = {"success": True}
+            if final_meta:
+                result["metadata"] = final_meta
+            result["data"] = self.data
+            return result
+        return {"success": False, "error": self.error}
+
+
+@runtime_checkable
+class Tool(Protocol):
+    """Protocol defining the tool contract.
+
+    All tool implementations must satisfy this protocol by providing:
+    - name: Unique identifier for the tool
+    - description: Human-readable description
+    - permission: Required permission level
+    - Params: Pydantic model class for parameter validation
+    - execute: Async method to perform the tool's action
+    """
+
+    name: str
+    description: str
+    permission: ToolPermission
+    Params: type[BaseModel]
+
+    async def execute(
+        self,
+        client: HomeboxClient,
+        token: str,
+        params: BaseModel,
+    ) -> ToolResult:
+        """Execute the tool with validated parameters.
+
+        Args:
+            client: HomeboxClient instance for API calls
+            token: Authentication token for Homebox
+            params: Validated parameters (instance of self.Params)
+
+        Returns:
+            ToolResult with success/error status and data
+        """
+        ...

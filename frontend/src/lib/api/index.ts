@@ -1,6 +1,6 @@
 /**
  * API Module - HTTP client for Homebox Companion backend
- * 
+ *
  * This module provides typed API access organized by domain:
  * - auth: Authentication (login)
  * - locations: Location CRUD
@@ -29,6 +29,7 @@ export { locations } from './locations';
 export { labels } from './labels';
 export { items, type BlobUrlResult } from './items';
 export { vision } from './vision';
+export { chat, type ChatEvent, type PendingApproval, type ChatHealthResponse } from './chat';
 
 // Re-export settings APIs
 export {
@@ -45,8 +46,70 @@ export {
 	type EffectiveDefaults,
 } from './settings';
 
+// Re-export Ollama APIs
+export {
+	getOllamaStatus,
+	testOllamaConnection,
+	listOllamaModels,
+	pullOllamaModel,
+	getGPUInfo,
+	getRecommendedModel,
+	getOllamaConfig,
+	type OllamaStatus,
+	type OllamaTestRequest,
+	type OllamaTestResponse,
+	type GPUInfo,
+	type ModelInfo,
+	type ModelPullResponse,
+	type OllamaConfig,
+	type RecommendedModelResponse,
+} from './ollama';
+
+// Re-export Sessions APIs (crash recovery)
+export {
+	checkActiveSession,
+	listRecoverableSessions,
+	listAllSessions,
+	getSession,
+	createSession,
+	recoverSession,
+	completeSession,
+	deleteSession,
+	addSessionImage,
+	startImageProcessing,
+	completeImageProcessing,
+	failImageProcessing,
+	type SessionSummary,
+	type SessionImage,
+	type SessionDetail,
+	type SessionCreateRequest,
+	type SessionCreateResponse,
+	type RecoveryResponse,
+	type ActiveSessionCheck,
+} from './sessions';
+
+// Re-export AI Config APIs
+export {
+	getAIConfig,
+	updateAIConfig,
+	resetAIConfig,
+	testProviderConnection,
+	getDefaultProviderConfig,
+	OLLAMA_VISION_MODELS,
+	OPENAI_MODELS,
+	ANTHROPIC_MODELS,
+	type AIConfigResponse,
+	type AIConfigInput,
+	type OllamaConfigData,
+	type OpenAIConfigData,
+	type AnthropicConfigData,
+	type LiteLLMConfigData,
+	type ProviderInfo,
+	type TestConnectionResponse,
+} from './aiConfig';
+
 // Re-export types from vision for convenience
-export type { DetectOptions, BatchDetectOptions } from './vision';
+export type { DetectOptions, BatchDetectOptions, GroupedDetectOptions } from './vision';
 
 // Re-export domain types for consumers that import from '$lib/api'
 export type {
@@ -64,4 +127,7 @@ export type {
 	CorrectionResponse,
 	BatchDetectionResult,
 	BatchDetectionResponse,
+	GroupedDetectionResponse,
+	DuplicateIndexStatus,
+	DuplicateIndexRebuildResponse,
 } from '../types';

@@ -1,6 +1,6 @@
 /**
  * Consolidated type definitions for Homebox Companion
- * 
+ *
  * This file contains all shared types organized by domain:
  * - Domain models (Location, Label, Item)
  * - API types (requests/responses)
@@ -72,7 +72,7 @@ export interface Item extends ItemCore, ItemExtended {
 /** Image captured for analysis */
 export interface CapturedImage {
 	file: File;
-	/** 
+	/**
 	 * URL for displaying preview thumbnail in UI.
 	 * This is typically an Object URL (blob:...) for memory efficiency.
 	 * Object URLs are much smaller than base64 data URLs since they
@@ -125,18 +125,23 @@ export interface ConfirmedItem extends ReviewItem {
 
 /** Status of the scan workflow */
 export type ScanStatus =
-	| 'idle'             // No active scan
-	| 'location'         // Selecting location
-	| 'capturing'        // Adding/configuring images
-	| 'analyzing'        // AI processing (async)
+	| 'idle' // No active scan
+	| 'location' // Selecting location
+	| 'capturing' // Adding/configuring images
+	| 'analyzing' // AI processing (async)
 	| 'partial_analysis' // Analysis complete with some failures
-	| 'reviewing'        // Editing detected items
-	| 'confirming'       // Summary before submit
-	| 'submitting'       // Creating items in Homebox
-	| 'complete';        // Success
+	| 'reviewing' // Editing detected items
+	| 'confirming' // Summary before submit
+	| 'submitting' // Creating items in Homebox
+	| 'complete'; // Success
 
 /** Status of individual item submission */
-export type ItemSubmissionStatus = 'pending' | 'creating' | 'success' | 'partial_success' | 'failed';
+export type ItemSubmissionStatus =
+	| 'pending'
+	| 'creating'
+	| 'success'
+	| 'partial_success'
+	| 'failed';
 
 /** Status of individual image analysis */
 export type ImageAnalysisStatus = 'pending' | 'analyzing' | 'success' | 'failed';
@@ -177,6 +182,8 @@ export interface ScanState {
 	// Review
 	detectedItems: ReviewItem[];
 	currentReviewIndex: number;
+	/** Potential duplicates detected (items that match existing serial numbers) */
+	duplicateMatches: DuplicateMatch[];
 	// Confirmation
 	confirmedItems: ConfirmedItem[];
 	// Submission
@@ -223,7 +230,7 @@ export interface ItemInput extends ItemCore, ItemExtended {
 }
 
 /** Item for merge operations */
-export interface MergeItem extends ItemCore, ItemExtended { }
+export interface MergeItem extends ItemCore, ItemExtended {}
 
 // =============================================================================
 // API TYPES - Responses
@@ -231,7 +238,7 @@ export interface MergeItem extends ItemCore, ItemExtended { }
 
 /** Compressed image from backend */
 export interface CompressedImage {
-	data: string;  // Base64-encoded image
+	data: string; // Base64-encoded image
 	mime_type: string;
 }
 
@@ -243,7 +250,10 @@ export interface DetectionResponse {
 }
 
 /** Detected item from AI (same as ItemCore + ItemExtended) */
-export interface DetectedItem extends ItemCore, ItemExtended { }
+export interface DetectedItem extends ItemCore, ItemExtended {
+	/** Indices of images showing this item (0-based). Only set in grouped detection mode. */
+	image_indices?: number[] | null;
+}
 
 /** Single image result in batch detection */
 export interface BatchDetectionResult {
@@ -259,6 +269,15 @@ export interface BatchDetectionResponse {
 	total_items: number;
 	successful_images: number;
 	failed_images: number;
+	message: string;
+}
+
+/** Response from grouped/auto-group detection */
+export interface GroupedDetectionResponse {
+	/** Unique items detected across all images, each with image_indices */
+	items: DetectedItem[];
+	/** Total number of images analyzed */
+	total_images: number;
 	message: string;
 }
 
@@ -325,6 +344,70 @@ export interface BatchCreateResponse {
 }
 
 // =============================================================================
+// DUPLICATE DETECTION TYPES
+// =============================================================================
+
+/** Summary of an existing item in Homebox */
+export interface ExistingItemInfo {
+	id: string;
+	name: string;
+	serial_number: string;
+	location_id?: string | null;
+	location_name?: string | null;
+}
+
+/** A match between a new item and an existing item */
+export interface DuplicateMatch {
+	/** Index of the new item in the submitted list */
+	item_index: number;
+	/** Name of the new item */
+	item_name: string;
+	/** The matching serial number (normalized to uppercase) */
+	serial_number: string;
+	/** The existing item that matches */
+	existing_item: ExistingItemInfo;
+}
+
+/** Request to check for duplicate items */
+export interface DuplicateCheckRequest {
+	items: ItemInput[];
+}
+
+/** Response from duplicate check */
+export interface DuplicateCheckResponse {
+	/** List of items that have matching serial numbers in Homebox */
+	duplicates: DuplicateMatch[];
+	/** Number of items that had serial numbers to check */
+	checked_count: number;
+	/** Summary message */
+	message: string;
+}
+
+/** Status of the duplicate detection index */
+export interface DuplicateIndexStatus {
+	/** ISO timestamp of last full build, or null if never built */
+	last_build_time: string | null;
+	/** ISO timestamp of last update (full or differential) */
+	last_update_time: string | null;
+	/** Total number of items in Homebox */
+	total_items_indexed: number;
+	/** Number of items with serial numbers in the index */
+	items_with_serials: number;
+	/** Highest asset ID seen (used for differential updates) */
+	highest_asset_id: number;
+	/** Whether the index is currently loaded in memory */
+	is_loaded: boolean;
+}
+
+/** Response from index rebuild operation */
+export interface DuplicateIndexRebuildResponse {
+	/** Updated index status after rebuild */
+	status: DuplicateIndexStatus;
+	/** Summary message */
+	message: string;
+}
+
+// =============================================================================
 // BACKWARDS COMPATIBILITY
 // Re-export with old names for gradual migration
 // =============================================================================
@@ -346,4 +429,3 @@ export type LocationCreateData = LocationCreateRequest;
 
 /** @deprecated Use LocationUpdateRequest instead */
 export type LocationUpdateData = LocationUpdateRequest;
-

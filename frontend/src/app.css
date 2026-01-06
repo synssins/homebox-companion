@@ -37,77 +37,19 @@
 
 /* Component utilities */
 @layer components {
-
-	/* Base button styles */
-	.btn {
-		@apply inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-medium transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-neutral-950;
-		touch-action: manipulation;
-	}
-
-	/* Primary button - main CTA */
-	.btn-primary {
-		@apply bg-primary-600 text-white hover:bg-primary-500 active:bg-primary-700 active:scale-[0.98] disabled:bg-neutral-800 disabled:text-neutral-500 disabled:cursor-not-allowed focus:ring-primary-500/50;
-		touch-action: manipulation;
-	}
-
-	/* Secondary button - alternative actions */
-	.btn-secondary {
-		@apply bg-neutral-800 text-neutral-200 hover:bg-neutral-700 hover:border-neutral-600 active:bg-neutral-900 active:scale-[0.98] disabled:bg-neutral-900 disabled:text-neutral-600 disabled:border-neutral-800 disabled:cursor-not-allowed border border-neutral-700 focus:ring-neutral-500/50;
-		touch-action: manipulation;
-	}
-
-	/* Ghost button - minimal appearance */
-	.btn-ghost {
-		@apply bg-transparent text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 active:bg-neutral-700 active:scale-[0.98] disabled:text-neutral-600 disabled:cursor-not-allowed focus:ring-neutral-500/50;
-		touch-action: manipulation;
-	}
-
-	/* Danger button - destructive actions */
-	.btn-danger {
-		@apply bg-error-600 text-white hover:bg-error-500 active:bg-error-700 active:scale-[0.98] disabled:bg-neutral-800 disabled:text-neutral-500 disabled:cursor-not-allowed focus:ring-error-500/50;
-		touch-action: manipulation;
-	}
-
-	/* Warning button */
-	.btn-warning {
-		@apply bg-warning-500 text-white hover:bg-warning-600 active:bg-warning-700 active:scale-[0.98] disabled:bg-neutral-800 disabled:text-neutral-500 disabled:cursor-not-allowed focus:ring-warning-500/50;
-		touch-action: manipulation;
-	}
-
 	/* Icon button - compact */
 	.btn-icon {
-		@apply p-2 rounded-lg text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 active:bg-neutral-700 transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-primary-500/50;
-		touch-action: manipulation;
-	}
-
-	/* Full width modifier */
-	.btn-full {
-		@apply w-full;
-	}
-
-	/* Card styles */
-	.card {
-		@apply bg-neutral-900 rounded-2xl border border-neutral-700 shadow-sm p-4 transition-all duration-200;
-	}
-
-	/* Elevated card - higher visual level */
-	.card-elevated {
-		@apply bg-neutral-800 border-neutral-600 shadow-md;
-	}
-
-	/* Interactive card - clickable */
-	.card-interactive {
-		@apply card cursor-pointer hover:bg-neutral-800 hover:border-neutral-600 hover:shadow-md active:scale-[0.99];
-	}
-
-	/* Selected card state */
-	.card-selected {
-		@apply card ring-2 ring-primary-500/50 border-primary-600;
+		@apply rounded-lg p-2 text-neutral-400 transition-colors duration-150 hover:bg-neutral-800 hover:text-neutral-200 focus:outline-none focus:ring-2 focus:ring-primary-500/50 active:bg-neutral-700;
 	}
 
 	/* Input styles */
 	.input {
-		@apply w-full px-4 py-3 bg-neutral-900 border border-neutral-700 rounded-xl text-neutral-200 placeholder:text-neutral-500 transition-all duration-150 focus:outline-none focus:bg-neutral-800 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 disabled:bg-neutral-950 disabled:text-neutral-600 disabled:border-neutral-800 disabled:cursor-not-allowed;
+		@apply w-full rounded-xl border border-neutral-700 bg-neutral-900 px-4 py-3 text-neutral-200 transition-all duration-150 placeholder:text-neutral-500 focus:border-primary-500 focus:bg-neutral-800 focus:outline-none focus:ring-2 focus:ring-primary-500/20 disabled:cursor-not-allowed disabled:border-neutral-800 disabled:bg-neutral-950 disabled:text-neutral-600;
+	}
+
+	/* Compact input variant for modals and dense UIs */
+	.input-sm {
+		@apply w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 transition-all duration-150 placeholder:text-neutral-500 focus:border-primary-500 focus:bg-neutral-800 focus:outline-none focus:ring-2 focus:ring-primary-500/20 disabled:cursor-not-allowed disabled:border-neutral-800 disabled:bg-neutral-950 disabled:text-neutral-600;
 	}
 
 	/* Input error state */
@@ -123,25 +65,216 @@
 
 	/* Label styles */
 	.label {
-		@apply block text-body-sm font-medium text-neutral-300 mb-2;
+		@apply mb-2 block text-body-sm font-medium text-neutral-300;
+	}
+
+	/* Compact label for modals and dense UIs */
+	.label-sm {
+		@apply mb-1 block text-xs font-medium text-neutral-400;
 	}
 
 	/* Label chip / badge styles */
 	.label-chip {
-		@apply px-3 py-1.5 rounded-lg border border-neutral-700 bg-neutral-900 text-neutral-300 text-sm hover:border-neutral-600 hover:bg-neutral-800 transition-all duration-150 cursor-pointer;
-		touch-action: manipulation;
+		@apply cursor-pointer rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-300 transition-all duration-150 hover:border-neutral-600 hover:bg-neutral-800;
 	}
 
 	.label-chip-selected {
-		@apply px-3 py-1.5 rounded-lg border-2 border-primary-500 bg-primary-500/20 text-primary-300 text-sm font-medium shadow-sm ring-2 ring-primary-500/20;
-		touch-action: manipulation;
+		@apply rounded-lg border-2 border-primary-500 bg-primary-500/20 px-3 py-1.5 text-sm font-medium text-primary-300 shadow-sm ring-2 ring-primary-500/20;
+	}
+
+	/* Touch-target icon button */
+	.btn-icon-touch {
+		@apply flex min-h-touch min-w-touch items-center justify-center rounded-lg p-2 text-neutral-400 transition-all hover:bg-neutral-700 hover:text-neutral-100;
+	}
+
+	/* Card base styles - use for lightweight card-like containers without importing Card.svelte */
+	.card {
+		@apply rounded-xl border border-neutral-700 bg-neutral-900 p-4 shadow-sm;
+	}
+
+	.card-interactive {
+		@apply card cursor-pointer transition-all hover:border-neutral-600 hover:bg-neutral-800 hover:shadow-md active:scale-[0.99];
+	}
+
+	/* ==========================================================================
+	   Chat Styling - Edit these to adjust chat density/sizing
+	   ========================================================================== */
+
+	/* Chat bubble container */
+	.chat-bubble {
+		@apply break-words rounded-2xl px-3 py-2 text-body;
+	}
+
+	/* User message line height */
+	.chat-bubble-user {
+		@apply leading-snug;
+	}
+
+	/* Metadata row (timestamp, tokens) */
+	.chat-meta {
+		@apply mt-0.5 flex items-center gap-1.5 px-1.5 text-xs text-neutral-500;
+	}
+
+	/* Tool accordion section */
+	.chat-tools-section {
+		@apply mt-1.5 border-t border-white/10 pt-1.5;
+	}
+
+	.chat-tools-summary {
+		@apply flex cursor-pointer select-none items-center gap-1 text-xs text-neutral-400 hover:text-neutral-300;
+	}
+
+	.chat-tools-grid {
+		@apply mt-1.5 flex flex-wrap gap-1;
+	}
+
+	/* Tool/action badge */
+	.chat-tool-badge {
+		@apply inline-flex items-center gap-0.5 rounded-md border px-1.5 py-0.5 text-xs font-medium;
+	}
+
+	/* Approval badge button */
+	.chat-approval-badge {
+		@apply mt-1.5 flex w-full items-center gap-1.5 rounded-lg border px-2 py-1.5 text-left text-xs font-medium transition-all active:scale-[0.98];
+	}
+
+	/* ==========================================================================
+	   Markdown Content Styling (extracted from ChatMessage for reuse)
+	   ========================================================================== */
+	.markdown-content {
+		margin: 0;
+		line-height: 1.35;
+	}
+
+	.markdown-content ul,
+	.markdown-content ol {
+		margin: 0.25rem 0;
+		padding-left: 1.25rem;
+	}
+
+	.markdown-content ul {
+		list-style-type: disc;
+	}
+
+	.markdown-content ol {
+		list-style-type: decimal;
+	}
+
+	.markdown-content li {
+		margin: 0.125rem 0;
+	}
+
+	.markdown-content p {
+		margin: 0.25rem 0;
+	}
+
+	.markdown-content p:first-child {
+		margin-top: 0;
+	}
+
+	.markdown-content p:last-child {
+		margin-bottom: 0;
+	}
+
+	.markdown-content *:last-child {
+		margin-bottom: 0;
+	}
+
+	.markdown-content strong {
+		font-weight: 600;
+		@apply text-neutral-100;
+	}
+
+	.markdown-content em {
+		font-style: italic;
+	}
+
+	.markdown-content code {
+		@apply rounded bg-primary-500/10 px-1 py-0.5 font-mono text-[0.85em];
+	}
+
+	.markdown-content pre {
+		@apply my-1.5 overflow-x-auto rounded-lg bg-black/30 p-2;
+	}
+
+	.markdown-content pre code {
+		@apply bg-transparent p-0;
+	}
+
+	.markdown-content h1,
+	.markdown-content h2,
+	.markdown-content h3 {
+		@apply font-semibold text-neutral-100;
+		margin: 0.5rem 0 0.25rem;
+	}
+
+	.markdown-content h1 {
+		@apply text-h4;
+	}
+
+	.markdown-content h2 {
+		@apply text-body;
+	}
+
+	.markdown-content h3 {
+		@apply text-body-sm;
+	}
+
+	/* GFM Tables */
+	.markdown-content table {
+		@apply my-3 w-full border-collapse;
+	}
+
+	.markdown-content th,
+	.markdown-content td {
+		@apply border border-neutral-600 px-3 py-2 text-left;
+	}
+
+	.markdown-content th {
+		@apply bg-neutral-700/50 font-semibold text-neutral-100;
+	}
+
+	.markdown-content tr:nth-child(even) {
+		@apply bg-neutral-800/30;
+	}
+
+	/* GFM Task Lists */
+	.markdown-content input[type='checkbox'] {
+		@apply mr-2 accent-primary-500;
+	}
+
+	.markdown-content li:has(input[type='checkbox']) {
+		list-style: none;
+		margin-left: -1.25rem;
+	}
+
+	/* Links */
+	.markdown-content a {
+		@apply text-primary-400 underline transition-colors hover:text-primary-300;
+	}
+
+	/* Blockquotes */
+	.markdown-content blockquote {
+		@apply my-3 border-l-4 border-primary-500/50 pl-4 italic text-neutral-400;
+	}
+
+	/* Horizontal Rule */
+	.markdown-content hr {
+		@apply my-4 border-neutral-600;
+	}
+
+	/* Strikethrough */
+	.markdown-content del {
+		@apply text-neutral-500;
 	}
 }
 
 /* Animation utilities */
 @layer utilities {
 	.animate-in {
-		animation: fadeIn 0.25s ease-out, slideUp 0.25s ease-out;
+		animation:
+			fadeIn 0.25s ease-out,
+			slideUp 0.25s ease-out;
 	}
 
 	/* Avoid double-animations: disable per-page animate-in when View Transitions are enabled */
@@ -180,94 +313,60 @@
 
 	/* Skeleton loading animation */
 	.skeleton {
-		@apply bg-neutral-800 rounded animate-shimmer;
-		background: linear-gradient(90deg, theme('colors.neutral.800') 25%, theme('colors.neutral.700') 50%, theme('colors.neutral.800') 75%);
+		@apply animate-shimmer rounded bg-neutral-800;
+		background: linear-gradient(
+			90deg,
+			theme('colors.neutral.800') 25%,
+			theme('colors.neutral.700') 50%,
+			theme('colors.neutral.800') 75%
+		);
 		background-size: 200% 100%;
-	}
-
-	/* Stagger animation delays for lists */
-	.stagger-1 {
-		animation-delay: 0.05s;
-	}
-
-	.stagger-2 {
-		animation-delay: 0.1s;
-	}
-
-	.stagger-3 {
-		animation-delay: 0.15s;
-	}
-
-	.stagger-4 {
-		animation-delay: 0.2s;
-	}
-
-	.stagger-5 {
-		animation-delay: 0.25s;
-	}
-
-	.stagger-6 {
-		animation-delay: 0.3s;
-	}
-
-	.stagger-7 {
-		animation-delay: 0.35s;
-	}
-
-	.stagger-8 {
-		animation-delay: 0.4s;
-	}
-
-	/* Stagger animation with fade in */
-	.animate-stagger {
-		opacity: 0;
-		animation: fadeSlideIn 0.3s ease-out forwards;
 	}
 
 	/* Checkmark draw animation for success pages */
 	.checkmark-draw {
 		stroke-dasharray: 50;
 		stroke-dashoffset: 50;
-		animation: drawCheck 0.4s ease-out 0.2s forwards;
+		@apply animate-draw-check;
 	}
 
 	/* Success circle scale in */
 	.success-scale {
 		transform: scale(0);
-		animation: scaleIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+		@apply animate-scale-up;
 	}
 
-	/* Success badge animation */
-	.success-badge {
-		animation: scaleIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-		z-index: 10;
+	/* Page container with bottom nav offset */
+	.page-content {
+		@apply animate-in pb-28;
+	}
+
+	/* Fixed bottom panel above nav */
+	.fixed-bottom-panel {
+		@apply bottom-nav-offset fixed left-0 right-0 z-40 border-t border-neutral-800 bg-neutral-950/95 backdrop-blur-lg;
+	}
+
+	/* Chat input container - adapts position for mobile virtual keyboard */
+	.chat-input-keyboard-aware {
+		@apply bottom-nav-offset fixed left-0 right-0 z-50 border-t border-neutral-800 bg-neutral-950/95 backdrop-blur-lg;
+		/* Ensure proper stacking and prevent layout shifts on iOS Safari */
+		transform: translateZ(0);
+		-webkit-transform: translateZ(0);
+		/* Smooth transition when keyboard opens/closes */
+		transition: bottom 0.15s ease-out;
+	}
+
+	/* Empty state container */
+	.empty-state {
+		@apply flex min-h-[35vh] flex-col items-center justify-center px-6 py-12 text-center;
 	}
 }
 
-/* Custom keyframes */
-@keyframes fadeSlideIn {
-	from {
-		opacity: 0;
-		transform: translateY(10px);
-	}
-
-	to {
-		opacity: 1;
-		transform: translateY(0);
-	}
-}
-
-@keyframes drawCheck {
-	to {
-		stroke-dashoffset: 0;
-	}
-}
-
-@keyframes scaleIn {
-	to {
-		transform: scale(1);
-	}
-}
+/* Keyframes now consolidated in tailwind.config.js:
+ * - fadeSlideIn -> animate-fade-slide-in
+ * - drawCheck -> animate-draw-check
+ * - scaleIn -> animate-scale-in (with opacity) / animate-scale-up (scale only)
+ */
 
 /* ==========================================================================
    Page transitions (View Transitions API)
@@ -275,7 +374,6 @@
    ========================================================================== */
 
 @media (prefers-reduced-motion: reduce) {
-
 	::view-transition-old(root),
 	::view-transition-new(root) {
 		animation: none;
