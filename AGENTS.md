@@ -101,6 +101,23 @@ Demo credentials: `demo@example.com` / `demo`
 - **Field Preferences**: Three-layer override (hardcoded → env vars → config file)
 - **Item creation**: Two-step POST (create) → PUT (extended fields) due to Homebox API
 
+### Frontend Design System
+
+Design tokens are defined in `tailwind.config.js`. **Always use tokens instead of raw values** to maintain consistency.
+
+| Category | ✅ Use This | ❌ Avoid |
+|----------|-------------|----------|
+| **Overlays** | `bg-neutral-950/60` | `bg-black/60` |
+| **Text on dark** | `text-neutral-100`, `text-neutral-300` | `text-white`, `text-white/80` |
+| **Semantic colors** | `warning-*`, `success-*`, `error-*` | `amber-*`, `yellow-*`, `red-*` |
+| **Accent color** | `text-accent`, `text-primary-400` | `text-cyan-400`, `text-blue-400` |
+| **Typography** | `text-body-sm`, `text-caption` | `text-sm`, `text-xs` |
+| **Touch targets** | `min-h-touch`, `min-w-touch` | `min-h-[44px]`, `min-w-[44px]` |
+
+**Canvas operations**: Use `CANVAS_COLORS` from `lib/utils/canvas-colors.ts` (synced with Tailwind tokens).
+
+**CSS custom values**: In component `<style>` blocks, use `theme('colors.primary.500')` instead of hard-coded hex values.
+
 ---
 
 ## Pre-Commit Checklist
@@ -118,6 +135,7 @@ Demo credentials: `demo@example.com` / `demo`
 ## Common Pitfalls
 
 - **Frontend**: Don't modify workflow state directly; use service methods
+- **Frontend**: Use design system tokens (see table above), not raw Tailwind colors
 - **Backend**: Extended fields (manufacturer, model, serial) require PUT after create
 - **AI**: Customizations replace defaults—don't concatenate instructions
 
