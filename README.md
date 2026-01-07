@@ -52,8 +52,7 @@ services:
     ports:
       - 8000:8000
     volumes:
-      - ./homebox-companion:/app/data      # Session data, duplicate index
-      - ./homebox-companion/config:/app/config  # Settings (AI config, preferences)
+      - ./homebox-companion:/data
 
 ```
 
@@ -79,8 +78,7 @@ services:
     ports:
       - 8000:8000
     volumes:
-      - ./homebox-companion:/app/data
-      - ./homebox-companion/config:/app/config
+      - ./homebox-companion:/data
 
   ollama:
     image: ollama/ollama:latest
