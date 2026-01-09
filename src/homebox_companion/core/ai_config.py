@@ -5,11 +5,10 @@ allowing users to configure which AI provider to use and their credentials.
 
 Supported providers:
 - ollama: Local Ollama server
-- openai: OpenAI API (GPT-4 Vision, etc.)
+- openai: OpenAI API (GPT-4 Vision, etc.) - also supports compatible endpoints
 - anthropic: Anthropic API (Claude)
-- litellm: LiteLLM proxy (existing cloud provider)
 
-Settings are persisted to config/ai_config.json
+Settings are persisted to {data_dir}/ai_config.json
 """
 
 from __future__ import annotations
@@ -24,9 +23,12 @@ from loguru import logger
 from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Default storage location
-CONFIG_DIR = Path("config")
-AI_CONFIG_FILE = CONFIG_DIR / "ai_config.json"
+from homebox_companion.core.config import settings
+
+
+def _get_config_path() -> Path:
+    """Get the AI config file path based on settings.data_dir."""
+    return Path(settings.data_dir) / "ai_config.json"
 
 
 class AIProvider(str, Enum):
@@ -35,7 +37,6 @@ class AIProvider(str, Enum):
     OLLAMA = "ollama"
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
-    LITELLM = "litellm"  # Existing cloud provider
 
 
 class OllamaConfig(BaseModel):
@@ -48,10 +49,18 @@ class OllamaConfig(BaseModel):
 
 
 class OpenAIConfig(BaseModel):
-    """OpenAI-specific configuration."""
+    """OpenAI-specific configuration.
 
-    enabled: bool = False
+    This provider handles OpenAI API and compatible endpoints (via api_base).
+    It's the default cloud provider, supporting:
+    - Direct OpenAI API access
+    - OpenAI-compatible proxies (LiteLLM, etc.)
+    - Self-hosted endpoints with OpenAI-compatible API
+    """
+
+    enabled: bool = True  # Default enabled as the primary cloud provider
     api_key: SecretStr | None = None
+    api_base: str | None = None  # Custom API base URL for compatible endpoints
     model: str = "gpt-4o"
     max_tokens: int = 4096
 
@@ -79,13 +88,6 @@ class AnthropicConfig(BaseModel):
         return v
 
 
-class LiteLLMConfig(BaseModel):
-    """LiteLLM/existing cloud provider configuration."""
-
-    enabled: bool = True  # Default enabled for backward compatibility
-    model: str = "gpt-4o"
-
-
 class AIConfig(BaseSettings):
     """Main AI configuration with provider selection.
 
@@ -101,19 +103,18 @@ class AIConfig(BaseSettings):
     )
 
     # Active provider - which one to use for AI operations
-    active_provider: AIProvider = AIProvider.LITELLM
+    active_provider: AIProvider = AIProvider.OPENAI
 
     # Fallback behavior
     fallback_to_cloud: bool = True
-    fallback_provider: AIProvider = AIProvider.LITELLM
+    fallback_provider: AIProvider = AIProvider.OPENAI
 
     # Provider-specific configs
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
     openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
     anthropic: AnthropicConfig = Field(default_factory=AnthropicConfig)
-    litellm: LiteLLMConfig = Field(default_factory=LiteLLMConfig)
 
-    def get_active_config(self) -> OllamaConfig | OpenAIConfig | AnthropicConfig | LiteLLMConfig:
+    def get_active_config(self) -> OllamaConfig | OpenAIConfig | AnthropicConfig:
         """Get the configuration for the active provider."""
         return getattr(self, self.active_provider.value)
 
@@ -124,11 +125,13 @@ class AIConfig(BaseSettings):
         if provider == AIProvider.OLLAMA:
             return config.enabled and bool(config.url)
         elif provider == AIProvider.OPENAI:
-            return config.enabled and config.api_key is not None
+            # OpenAI is configured if enabled AND has either:
+            # - An explicit api_key set, OR
+            # - An api_base pointing to a self-hosted endpoint (may not need auth)
+            # Note: Falls back to HBC_LLM_API_KEY env var at runtime if neither is set
+            return config.enabled and (config.api_key is not None or config.api_base is not None)
         elif provider == AIProvider.ANTHROPIC:
             return config.enabled and config.api_key is not None
-        elif provider == AIProvider.LITELLM:
-            return config.enabled
         return False
 
     def to_safe_dict(self) -> dict[str, Any]:
@@ -171,22 +174,44 @@ def load_ai_config() -> AIConfig:
     """
     defaults = get_ai_defaults()
 
-    if not AI_CONFIG_FILE.exists():
+    config_file = _get_config_path()
+    if not config_file.exists():
         return defaults
 
     try:
-        file_data = json.loads(AI_CONFIG_FILE.read_text(encoding="utf-8"))
+        file_data = json.loads(config_file.read_text(encoding="utf-8"))
 
         # Deep merge for nested provider configs
         merged = defaults.model_dump()
+
+        # Handle migration from old "litellm" provider to "openai"
+        if file_data.get("active_provider") == "litellm":
+            file_data["active_provider"] = "openai"
+        if file_data.get("fallback_provider") == "litellm":
+            file_data["fallback_provider"] = "openai"
+
+        # Migrate litellm config to openai if present
+        if "litellm" in file_data and file_data["litellm"]:
+            litellm_data = file_data["litellm"]
+            # Only migrate if openai doesn't have values set
+            if not file_data.get("openai", {}).get("api_key"):
+                if litellm_data.get("api_key"):
+                    merged["openai"]["api_key"] = litellm_data["api_key"]
+            if not file_data.get("openai", {}).get("api_base"):
+                if litellm_data.get("api_base"):
+                    merged["openai"]["api_base"] = litellm_data["api_base"]
+            if litellm_data.get("model") and not file_data.get("openai", {}).get("model"):
+                merged["openai"]["model"] = litellm_data["model"]
+            if litellm_data.get("enabled"):
+                merged["openai"]["enabled"] = litellm_data["enabled"]
 
         # Update top-level fields
         for key in ["active_provider", "fallback_to_cloud", "fallback_provider"]:
             if key in file_data:
                 merged[key] = file_data[key]
 
-        # Update provider configs
-        for provider in ["ollama", "openai", "anthropic", "litellm"]:
+        # Update provider configs (excluding deprecated litellm)
+        for provider in ["ollama", "openai", "anthropic"]:
             if provider in file_data and file_data[provider]:
                 merged[provider].update(file_data[provider])
 
@@ -202,7 +227,8 @@ def save_ai_config(config: AIConfig) -> None:
     Args:
         config: The configuration to save.
     """
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    config_file = _get_config_path()
+    config_file.parent.mkdir(parents=True, exist_ok=True)
 
     # Convert to dict, handling SecretStr
     data = {
@@ -218,11 +244,10 @@ def save_ai_config(config: AIConfig) -> None:
             **config.anthropic.model_dump(),
             "api_key": config.anthropic.api_key.get_secret_value() if config.anthropic.api_key else None,
         },
-        "litellm": config.litellm.model_dump(),
     }
 
-    AI_CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    logger.info(f"AI config saved: active_provider={config.active_provider.value}")
+    config_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    logger.info(f"AI config saved to {config_file}: active_provider={config.active_provider.value}")
 
 
 def reset_ai_config() -> AIConfig:
@@ -231,8 +256,9 @@ def reset_ai_config() -> AIConfig:
     Returns:
         AIConfig with defaults.
     """
-    if AI_CONFIG_FILE.exists():
-        AI_CONFIG_FILE.unlink()
+    config_file = _get_config_path()
+    if config_file.exists():
+        config_file.unlink()
     # Clear the cache so defaults are re-evaluated
     get_ai_defaults.cache_clear()
     return get_ai_defaults()

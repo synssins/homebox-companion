@@ -28,7 +28,7 @@ from homebox_companion import (
 from ...dependencies import (
     LLMConfig,
     VisionContext,
-    get_configured_llm,
+    get_configured_llm_with_fallback,
     get_vision_context,
     validate_file_size,
     validate_files_size,
@@ -43,6 +43,7 @@ from ...schemas.vision import (
     DetectedItemResponse,
     DetectionResponse,
     GroupedDetectionResponse,
+    TokenUsageResponse,
 )
 
 router = APIRouter()
@@ -87,6 +88,25 @@ def _get_compression_semaphore() -> asyncio.Semaphore:
     return _COMPRESSION_SEMAPHORE
 
 
+def convert_usage_to_response(usage) -> TokenUsageResponse | None:
+    """Convert internal TokenUsage to response schema.
+
+    Args:
+        usage: TokenUsage object from detection result.
+
+    Returns:
+        TokenUsageResponse schema or None if no usage data.
+    """
+    if usage is None:
+        return None
+    return TokenUsageResponse(
+        prompt_tokens=usage.prompt_tokens,
+        completion_tokens=usage.completion_tokens,
+        total_tokens=usage.total_tokens,
+        provider=usage.provider,
+    )
+
+
 def filter_default_label(label_ids: list[str] | None, default_label_id: str | None) -> list[str]:
     """Filter out the default label from AI-suggested labels.
 
@@ -110,7 +130,7 @@ def filter_default_label(label_ids: list[str] | None, default_label_id: str | No
 def get_llm_model_for_litellm(llm_config: LLMConfig) -> str:
     """Get the model name formatted for LiteLLM.
 
-    For OpenAI and Anthropic providers, we need to prefix the model name
+    For Ollama and Anthropic providers, we need to prefix the model name
     so LiteLLM routes to the correct provider.
 
     Args:
@@ -119,22 +139,104 @@ def get_llm_model_for_litellm(llm_config: LLMConfig) -> str:
     Returns:
         Model name formatted for LiteLLM.
     """
-    if llm_config.provider == "anthropic":
+    if llm_config.provider == "ollama":
+        # Ollama models need prefix for LiteLLM routing
+        if not llm_config.model.startswith("ollama/"):
+            return f"ollama/{llm_config.model}"
+    elif llm_config.provider == "anthropic":
         # Anthropic models need prefix for LiteLLM
         if not llm_config.model.startswith("anthropic/"):
             return f"anthropic/{llm_config.model}"
     elif llm_config.provider == "openai":
         # OpenAI models work as-is with LiteLLM
         pass
-    # For ollama and litellm, use model as-is
+    # Default: use model as-is
     return llm_config.model
+
+
+async def run_with_fallback(
+    primary_config: LLMConfig,
+    fallback_config: LLMConfig | None,
+    operation_name: str,
+    async_fn,
+    *args,
+    **kwargs,
+):
+    """Run an async function with fallback provider support.
+
+    If the primary provider fails and a fallback is configured,
+    retry with the fallback provider.
+
+    Args:
+        primary_config: Primary LLM configuration.
+        fallback_config: Fallback LLM configuration (or None).
+        operation_name: Name of the operation for logging.
+        async_fn: Async function to call.
+        *args, **kwargs: Arguments to pass to the function.
+            The function should accept 'api_key', 'model', and 'api_base' kwargs.
+
+    Returns:
+        Result from the async function.
+
+    Raises:
+        The original exception if fallback is not available or also fails.
+    """
+    try:
+        # Try primary provider
+        return await async_fn(
+            *args,
+            api_key=primary_config.api_key,
+            model=get_llm_model_for_litellm(primary_config),
+            api_base=primary_config.api_base,
+            **kwargs,
+        )
+    except Exception as primary_error:
+        # Log primary failure
+        error_msg = str(primary_error)
+        if len(error_msg) > 200:
+            error_msg = error_msg[:200] + "..."
+        logger.error(
+            f"[FALLBACK] Primary provider '{primary_config.provider}' failed for {operation_name}: "
+            f"{type(primary_error).__name__}: {error_msg}"
+        )
+
+        # Check if fallback is available
+        if fallback_config is None:
+            logger.info(f"[FALLBACK] No fallback configured, re-raising error")
+            raise
+
+        # Try fallback provider
+        logger.info(
+            f"[FALLBACK] Attempting fallback to '{fallback_config.provider}' "
+            f"(model: {fallback_config.model})"
+        )
+        try:
+            result = await async_fn(
+                *args,
+                api_key=fallback_config.api_key,
+                model=get_llm_model_for_litellm(fallback_config),
+                api_base=fallback_config.api_base,
+                **kwargs,
+            )
+            logger.info(f"[FALLBACK] Fallback to '{fallback_config.provider}' succeeded")
+            return result
+        except Exception as fallback_error:
+            fallback_msg = str(fallback_error)
+            if len(fallback_msg) > 200:
+                fallback_msg = fallback_msg[:200] + "..."
+            logger.error(
+                f"[FALLBACK] Fallback provider '{fallback_config.provider}' also failed: "
+                f"{type(fallback_error).__name__}: {fallback_msg}"
+            )
+            # Re-raise the original error (primary failure is more relevant)
+            raise primary_error from fallback_error
 
 
 @router.post("/detect", response_model=DetectionResponse)
 async def detect_items(
     image: Annotated[UploadFile, File(description="Primary image file to analyze")],
     ctx: Annotated[VisionContext, Depends(get_vision_context)],
-    llm_config: Annotated[LLMConfig, Depends(get_configured_llm)],
+    llm_configs: Annotated[tuple[LLMConfig, LLMConfig | None], Depends(get_configured_llm_with_fallback)],
     single_item: Annotated[bool, Form()] = False,
     extra_instructions: Annotated[str | None, Form()] = None,
     extract_extended_fields: Annotated[bool, Form()] = True,
@@ -147,15 +249,18 @@ async def detect_items(
     Args:
         image: The primary image file to analyze.
         ctx: Vision context with auth token, labels, and preferences.
-        llm_config: LLM configuration with api_key, model, and provider.
+        llm_configs: Tuple of (primary_config, fallback_config) for LLM.
         single_item: If True, treat everything as a single item.
         extra_instructions: Optional user hint about what's in the image.
         extract_extended_fields: If True, also extract extended fields.
         additional_images: Optional additional images for the same item(s).
     """
+    llm_config, fallback_config = llm_configs
     additional_count = len(additional_images) if additional_images else 0
     logger.info(f"Detecting items from image: {image.filename} (+ {additional_count} additional)")
     logger.info(f"Using provider: {llm_config.provider}, model: {llm_config.model}")
+    if fallback_config:
+        logger.info(f"Fallback enabled: {fallback_config.provider}, model: {fallback_config.model}")
     logger.info(f"Single item mode: {single_item}, Extra instructions: {extra_instructions}")
     logger.info(f"Extract extended fields: {extract_extended_fields}")
 
@@ -200,25 +305,31 @@ async def detect_items(
     # Detect items
     logger.info("Starting LLM vision detection and image compression...")
 
-    # Run detection and compression in parallel
-    detection_task = detect_items_from_bytes(
-        image_bytes=image_bytes,
-        api_key=llm_config.api_key,
-        mime_type=content_type,
-        model=get_llm_model_for_litellm(llm_config),
-        labels=ctx.labels,
-        single_item=single_item,
-        extra_instructions=extra_instructions,
-        extract_extended_fields=extract_extended_fields,
-        additional_images=additional_image_data,
-        field_preferences=ctx.field_preferences,
-        output_language=ctx.output_language,
-    )
+    # Detection function with fallback support
+    async def run_detection():
+        return await run_with_fallback(
+            primary_config=llm_config,
+            fallback_config=fallback_config,
+            operation_name="detect_items",
+            async_fn=detect_items_from_bytes,
+            image_bytes=image_bytes,
+            mime_type=content_type,
+            labels=ctx.labels,
+            single_item=single_item,
+            extra_instructions=extra_instructions,
+            extract_extended_fields=extract_extended_fields,
+            additional_images=additional_image_data,
+            field_preferences=ctx.field_preferences,
+            output_language=ctx.output_language,
+        )
+
+    # Run detection (with fallback) and compression in parallel
+    detection_task = run_detection()
     compression_task = compress_all_images()
 
-    detected, compressed_images = await asyncio.gather(detection_task, compression_task)
+    detection_result, compressed_images = await asyncio.gather(detection_task, compression_task)
 
-    logger.info(f"Detected {len(detected)} items, compressed {len(compressed_images)} images")
+    logger.info(f"Detected {len(detection_result.items)} items, compressed {len(compressed_images)} images")
 
     # Filter out default label from AI suggestions (frontend will auto-add it)
     return DetectionResponse(
@@ -235,9 +346,10 @@ async def detect_items(
                 purchase_from=item.purchase_from,
                 notes=item.notes,
             )
-            for item in detected
+            for item in detection_result.items
         ],
         compressed_images=compressed_images,
+        usage=convert_usage_to_response(detection_result.usage),
     )
 
 
@@ -245,7 +357,7 @@ async def detect_items(
 async def detect_items_batch(
     images: Annotated[list[UploadFile], File(description="Multiple images to analyze in parallel")],
     ctx: Annotated[VisionContext, Depends(get_vision_context)],
-    llm_config: Annotated[LLMConfig, Depends(get_configured_llm)],
+    llm_configs: Annotated[tuple[LLMConfig, LLMConfig | None], Depends(get_configured_llm_with_fallback)],
     configs: Annotated[str | None, Form()] = None,
     extract_extended_fields: Annotated[bool, Form()] = True,
 ) -> BatchDetectionResponse:
@@ -257,12 +369,15 @@ async def detect_items_batch(
     Args:
         images: List of image files to analyze (each treated as separate item(s)).
         ctx: Vision context with auth token, labels, and preferences.
-        llm_config: LLM configuration with api_key, model, and provider.
+        llm_configs: Tuple of (primary_config, fallback_config) for LLM.
         configs: Optional JSON string with per-image configs.
             Format: [{"single_item": bool, "extra_instructions": str}, ...]
         extract_extended_fields: If True, also extract extended fields for all images.
     """
+    llm_config, fallback_config = llm_configs
     logger.info(f"Batch detection for {len(images)} images")
+    if fallback_config:
+        logger.info(f"Fallback enabled: {fallback_config.provider}, model: {fallback_config.model}")
 
     if not images:
         raise HTTPException(status_code=400, detail="At least one image is required")
@@ -288,7 +403,7 @@ async def detect_items_batch(
         image_bytes: bytes,
         mime_type: str,
     ) -> BatchDetectionResult:
-        """Process a single image and return result."""
+        """Process a single image and return result (with fallback support)."""
         if not image_bytes:
             return BatchDetectionResult(
                 image_index=index,
@@ -302,11 +417,14 @@ async def detect_items_batch(
         extra_instructions = config.get("extra_instructions")
 
         try:
-            detected = await detect_items_from_bytes(
+            # Use fallback wrapper for detection
+            detection_result = await run_with_fallback(
+                primary_config=llm_config,
+                fallback_config=fallback_config,
+                operation_name=f"detect_items_batch[{index}]",
+                async_fn=detect_items_from_bytes,
                 image_bytes=image_bytes,
-                api_key=llm_config.api_key,
                 mime_type=mime_type,
-                model=get_llm_model_for_litellm(llm_config),
                 labels=ctx.labels,
                 single_item=single_item,
                 extra_instructions=extra_instructions,
@@ -332,8 +450,9 @@ async def detect_items_batch(
                         purchase_from=item.purchase_from,
                         notes=item.notes,
                     )
-                    for item in detected
+                    for item in detection_result.items
                 ],
+                usage=convert_usage_to_response(detection_result.usage),
             )
         except CapabilityNotSupportedError as e:
             # Configuration/capability errors - provide clear message
@@ -381,6 +500,28 @@ async def detect_items_batch(
     failed = len(results) - successful
     total_items = sum(len(r.items) for r in results)
 
+    # Aggregate token usage across all successful results
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_total_tokens = 0
+    provider = "unknown"
+    for r in results:
+        if r.usage:
+            total_prompt_tokens += r.usage.prompt_tokens
+            total_completion_tokens += r.usage.completion_tokens
+            total_total_tokens += r.usage.total_tokens
+            provider = r.usage.provider  # Use the last provider
+
+    # Only include total_usage if any tokens were counted
+    total_usage = None
+    if total_total_tokens > 0:
+        total_usage = TokenUsageResponse(
+            prompt_tokens=total_prompt_tokens,
+            completion_tokens=total_completion_tokens,
+            total_tokens=total_total_tokens,
+            provider=provider,
+        )
+
     logger.info(
         f"Batch detection complete: {successful}/{len(results)} images successful, "
         f"{total_items} total items detected"
@@ -392,6 +533,7 @@ async def detect_items_batch(
         successful_images=successful,
         failed_images=failed,
         message=f"Processed {len(results)} images in parallel",
+        total_usage=total_usage,
     )
 
 
@@ -399,7 +541,7 @@ async def detect_items_batch(
 async def detect_items_grouped(
     images: Annotated[list[UploadFile], File(description="Multiple images to analyze together")],
     ctx: Annotated[VisionContext, Depends(get_vision_context)],
-    llm_config: Annotated[LLMConfig, Depends(get_configured_llm)],
+    llm_configs: Annotated[tuple[LLMConfig, LLMConfig | None], Depends(get_configured_llm_with_fallback)],
     extra_instructions: Annotated[str | None, Form()] = None,
     extract_extended_fields: Annotated[bool, Form()] = True,
 ) -> GroupedDetectionResponse:
@@ -420,11 +562,14 @@ async def detect_items_grouped(
     Args:
         images: List of image files to analyze together.
         ctx: Vision context with auth token, labels, and preferences.
-        llm_config: LLM configuration with api_key, model, and provider.
+        llm_configs: Tuple of (primary_config, fallback_config) for LLM.
         extra_instructions: Optional user hint about image contents.
         extract_extended_fields: If True, also extract extended fields.
     """
+    llm_config, fallback_config = llm_configs
     logger.info(f"Grouped detection for {len(images)} images")
+    if fallback_config:
+        logger.info(f"Fallback enabled: {fallback_config.provider}, model: {fallback_config.model}")
 
     if not images:
         raise HTTPException(status_code=400, detail="At least one image is required")
@@ -447,12 +592,14 @@ async def detect_items_grouped(
     ]
 
     try:
-        # Run grouped detection
+        # Run grouped detection with fallback support
         logger.info(f"Starting grouped detection with {len(image_data_uris)} images...")
-        detected = await grouped_detect_items(
+        detection_result = await run_with_fallback(
+            primary_config=llm_config,
+            fallback_config=fallback_config,
+            operation_name="grouped_detect_items",
+            async_fn=grouped_detect_items,
             image_data_uris=image_data_uris,
-            api_key=llm_config.api_key,
-            model=get_llm_model_for_litellm(llm_config),
             labels=ctx.labels,
             extract_extended_fields=extract_extended_fields,
             extra_instructions=extra_instructions,
@@ -460,7 +607,7 @@ async def detect_items_grouped(
             output_language=ctx.output_language,
         )
 
-        logger.info(f"Grouped detection found {len(detected)} unique items")
+        logger.info(f"Grouped detection found {len(detection_result.items)} unique items")
 
         # Filter out default label from AI suggestions
         return GroupedDetectionResponse(
@@ -478,15 +625,16 @@ async def detect_items_grouped(
                     notes=item.notes,
                     image_indices=item.image_indices,
                 )
-                for item in detected
+                for item in detection_result.items
             ],
             total_images=len(images),
-            message=f"Found {len(detected)} unique items in {len(images)} images",
+            message=f"Found {len(detection_result.items)} unique items in {len(images)} images",
+            usage=convert_usage_to_response(detection_result.usage),
         )
     except CapabilityNotSupportedError as e:
         logger.error(f"Configuration error for grouped detection: {e}")
         raise HTTPException(status_code=400, detail=str(e)) from e
-    except (JSONRepairError, LLMError) as e:
+    except (JSONRepairError, LLMServiceError) as e:
         logger.error(f"LLM error for grouped detection: {e}")
         error_msg = str(e)
         if len(error_msg) > 200:
@@ -499,11 +647,14 @@ async def analyze_item_advanced(
     images: Annotated[list[UploadFile], File(description="Images to analyze")],
     item_name: Annotated[str, Form()],
     ctx: Annotated[VisionContext, Depends(get_vision_context)],
-    llm_config: Annotated[LLMConfig, Depends(get_configured_llm)],
+    llm_configs: Annotated[tuple[LLMConfig, LLMConfig | None], Depends(get_configured_llm_with_fallback)],
     item_description: Annotated[str | None, Form()] = None,
 ) -> AdvancedItemDetails:
     """Analyze multiple images to extract detailed item information."""
+    llm_config, fallback_config = llm_configs
     logger.info(f"Advanced analysis for item: {item_name}")
+    if fallback_config:
+        logger.info(f"Fallback enabled: {fallback_config.provider}, model: {fallback_config.model}")
     logger.debug(f"Description: {item_description}")
     logger.debug(f"Number of images: {len(images) if images else 0}")
 
@@ -518,14 +669,16 @@ async def analyze_item_advanced(
         for img_bytes, mime_type in validated_images
     ]
 
-    # Analyze images
+    # Analyze images with fallback support
     logger.info(f"Analyzing {len(image_data_uris)} images with LLM (provider: {llm_config.provider})...")
-    details = await analyze_item_details_from_images(
+    details = await run_with_fallback(
+        primary_config=llm_config,
+        fallback_config=fallback_config,
+        operation_name="analyze_item_details",
+        async_fn=analyze_item_details_from_images,
         image_data_uris=image_data_uris,
         item_name=item_name,
         item_description=item_description,
-        api_key=llm_config.api_key,
-        model=get_llm_model_for_litellm(llm_config),
         labels=ctx.labels,
         field_preferences=ctx.field_preferences,
         output_language=ctx.output_language,
@@ -555,14 +708,17 @@ async def correct_item(
     current_item: Annotated[str, Form(description="JSON string of current item")],
     correction_instructions: Annotated[str, Form(description="User's correction feedback")],
     ctx: Annotated[VisionContext, Depends(get_vision_context)],
-    llm_config: Annotated[LLMConfig, Depends(get_configured_llm)],
+    llm_configs: Annotated[tuple[LLMConfig, LLMConfig | None], Depends(get_configured_llm_with_fallback)],
 ) -> CorrectionResponse:
     """Correct an item based on user feedback.
 
     This endpoint allows users to provide feedback about a detected item,
     and the AI will re-analyze with the feedback.
     """
+    llm_config, fallback_config = llm_configs
     logger.info("Item correction request received")
+    if fallback_config:
+        logger.info(f"Fallback enabled: {fallback_config.provider}, model: {fallback_config.model}")
 
     # Validate correction instructions
     if not correction_instructions or not correction_instructions.strip():
@@ -598,14 +754,16 @@ async def correct_item(
 
     logger.debug(f"Loaded {len(ctx.labels)} labels for context")
 
-    # Call the correction function
+    # Call the correction function with fallback support
     logger.info(f"Starting LLM item correction (provider: {llm_config.provider})...")
-    corrected_items = await llm_correct_item(
+    corrected_items = await run_with_fallback(
+        primary_config=llm_config,
+        fallback_config=fallback_config,
+        operation_name="correct_item",
+        async_fn=llm_correct_item,
         image_data_uri=image_data_uri,
         current_item=current_item_dict,
         correction_instructions=correction_instructions,
-        api_key=llm_config.api_key,
-        model=get_llm_model_for_litellm(llm_config),
         labels=ctx.labels,
         field_preferences=ctx.field_preferences,
         output_language=ctx.output_language,

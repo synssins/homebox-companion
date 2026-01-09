@@ -4,9 +4,8 @@
 	 *
 	 * Allows users to select and configure their AI provider:
 	 * - Ollama (local)
-	 * - OpenAI
+	 * - OpenAI (supports custom api_base for compatible endpoints)
 	 * - Anthropic (Claude)
-	 * - LiteLLM (cloud fallback)
 	 */
 	import { settingsService } from '$lib/workflows/settings.svelte';
 	import {
@@ -16,6 +15,7 @@
 		type AIConfigInput,
 	} from '$lib/api/aiConfig';
 	import Button from '$lib/components/Button.svelte';
+	import CollapsibleSection from './CollapsibleSection.svelte';
 
 	const service = settingsService;
 
@@ -35,6 +35,7 @@
 				openai: {
 					enabled: service.aiConfig.openai.enabled,
 					api_key: null, // Don't populate masked keys
+					api_base: service.aiConfig.openai.api_base,
 					model: service.aiConfig.openai.model,
 					max_tokens: service.aiConfig.openai.max_tokens,
 				},
@@ -44,7 +45,6 @@
 					model: service.aiConfig.anthropic.model,
 					max_tokens: service.aiConfig.anthropic.max_tokens,
 				},
-				litellm: { ...service.aiConfig.litellm },
 			};
 		}
 	});
@@ -67,6 +67,7 @@
 				openai: {
 					enabled: service.aiConfig.openai.enabled,
 					api_key: null,
+					api_base: service.aiConfig.openai.api_base,
 					model: service.aiConfig.openai.model,
 					max_tokens: service.aiConfig.openai.max_tokens,
 				},
@@ -76,7 +77,6 @@
 					model: service.aiConfig.anthropic.model,
 					max_tokens: service.aiConfig.anthropic.max_tokens,
 				},
-				litellm: { ...service.aiConfig.litellm },
 			};
 		}
 
@@ -110,14 +110,13 @@
 			// Only use the editing key - don't fall back to masked display key
 			// If no key entered, the test will prompt user to enter one
 			config.api_key = editingConfig.openai.api_key;
+			config.api_base = editingConfig.openai.api_base;
 			config.model = editingConfig.openai.model;
 		} else if (provider === 'anthropic') {
 			// Only use the editing key - don't fall back to masked display key
 			// If no key entered, the test will prompt user to enter one
 			config.api_key = editingConfig.anthropic.api_key;
 			config.model = editingConfig.anthropic.model;
-		} else if (provider === 'litellm') {
-			config.model = editingConfig.litellm.model;
 		}
 
 		await service.testAIProviderConnection(provider, config);
@@ -132,7 +131,6 @@
 		if (providerId === 'ollama') editingConfig.ollama.enabled = true;
 		else if (providerId === 'openai') editingConfig.openai.enabled = true;
 		else if (providerId === 'anthropic') editingConfig.anthropic.enabled = true;
-		else if (providerId === 'litellm') editingConfig.litellm.enabled = true;
 	}
 
 	// Toggle functions for provider enable/disable (handles null check for TypeScript)
@@ -145,9 +143,6 @@
 	function toggleAnthropic() {
 		if (editingConfig) editingConfig.anthropic.enabled = !editingConfig.anthropic.enabled;
 	}
-	function toggleLiteLLM() {
-		if (editingConfig) editingConfig.litellm.enabled = !editingConfig.litellm.enabled;
-	}
 
 	// Get provider display info
 	function getProviderIcon(providerId: string): string {
@@ -158,8 +153,6 @@
 				return 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z';
 			case 'anthropic':
 				return 'M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z';
-			case 'litellm':
-				return 'M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z';
 			default:
 				return 'M13 10V3L4 14h7v7l9-11h-7z';
 		}
@@ -173,30 +166,27 @@
 				return 'OpenAI';
 			case 'anthropic':
 				return 'Anthropic';
-			case 'litellm':
-				return 'Cloud';
 			default:
 				return providerId;
 		}
 	}
 </script>
 
-<section class="card space-y-4">
-	<h2 class="flex items-center gap-2 text-body-lg font-semibold text-neutral-100">
-		<svg
-			class="h-5 w-5 text-primary-400"
-			fill="none"
-			stroke="currentColor"
-			viewBox="0 0 24 24"
-			stroke-width="1.5"
-		>
-			<path
-				d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
-			/>
-		</svg>
-		AI Provider
-	</h2>
+{#snippet icon()}
+	<svg
+		class="h-5 w-5 text-primary"
+		fill="none"
+		stroke="currentColor"
+		viewBox="0 0 24 24"
+		stroke-width="1.5"
+	>
+		<path
+			d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
+		/>
+	</svg>
+{/snippet}
 
+<CollapsibleSection title="AI Provider" {icon}>
 	<!-- Toggle Button -->
 	<button
 		type="button"
@@ -266,7 +256,12 @@
 							<div class="min-w-0 flex-1">
 								<p class="truncate text-sm font-medium">{provider.name}</p>
 							</div>
-							{#if provider.configured}
+							<!-- Gold filled star for selected provider -->
+							{#if editingConfig.active_provider === provider.id}
+								<svg class="h-4 w-4 flex-shrink-0 text-yellow-400" fill="currentColor" viewBox="0 0 24 24">
+									<path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+								</svg>
+							{:else if provider.configured}
 								<svg class="h-4 w-4 flex-shrink-0 text-success-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
 									<polyline points="20 6 9 17 4 12" />
 								</svg>
@@ -274,6 +269,56 @@
 						</button>
 					{/each}
 				</div>
+			</div>
+
+			<!-- Fallback Provider Section -->
+			<div class="space-y-3 rounded-xl border border-neutral-700 bg-neutral-800/30 p-4">
+				<div class="flex items-center justify-between">
+					<div>
+						<h3 class="text-sm font-medium text-neutral-200">Fallback Provider</h3>
+						<p class="text-xs text-neutral-500">Use a backup provider if primary fails</p>
+					</div>
+					<button
+						type="button"
+						class="relative h-5 w-9 rounded-full transition-colors {editingConfig.fallback_to_cloud
+							? 'bg-primary-500'
+							: 'bg-neutral-600'}"
+						onclick={() => {
+							if (editingConfig) editingConfig.fallback_to_cloud = !editingConfig.fallback_to_cloud;
+						}}
+						role="switch"
+						aria-checked={editingConfig.fallback_to_cloud}
+						aria-label="Enable fallback provider"
+					>
+						<span
+							class="absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform {editingConfig.fallback_to_cloud
+								? 'translate-x-4'
+								: 'translate-x-0'}"
+						></span>
+					</button>
+				</div>
+
+				{#if editingConfig.fallback_to_cloud}
+					<div class="space-y-2">
+						<label for="fallback-provider" class="block text-xs text-neutral-400">
+							Fallback to
+						</label>
+						<select
+							id="fallback-provider"
+							bind:value={editingConfig.fallback_provider}
+							class="input w-full"
+						>
+							{#each service.aiConfig?.providers || [] as provider}
+								{#if provider.id !== editingConfig.active_provider && provider.configured}
+									<option value={provider.id}>{provider.name}</option>
+								{/if}
+							{/each}
+						</select>
+						<p class="text-xs text-neutral-500">
+							If the primary provider times out or fails, the request will automatically retry with this provider.
+						</p>
+					</div>
+				{/if}
 			</div>
 
 			<!-- Provider-specific settings - shown for currently selected provider -->
@@ -473,47 +518,6 @@
 						<p class="text-xs text-neutral-500">Enable to configure Anthropic settings</p>
 					{/if}
 				</div>
-			{:else if editingConfig.active_provider === 'litellm'}
-				<div class="space-y-3 rounded-xl border border-neutral-700 bg-neutral-800/30 p-4">
-					<div class="flex items-center justify-between">
-						<h3 class="text-sm font-medium text-neutral-200">Cloud (LiteLLM) Settings</h3>
-						<button
-							type="button"
-							class="relative h-5 w-9 rounded-full transition-colors {editingConfig.litellm.enabled
-								? 'bg-primary-500'
-								: 'bg-neutral-600'}"
-							onclick={toggleLiteLLM}
-							role="switch"
-							aria-checked={editingConfig.litellm.enabled}
-							aria-label="Enable LiteLLM"
-						>
-							<span
-								class="absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform {editingConfig.litellm.enabled
-									? 'translate-x-4'
-									: 'translate-x-0'}"
-							></span>
-						</button>
-					</div>
-
-					{#if editingConfig.litellm.enabled}
-						<p class="text-xs text-neutral-400">
-							Uses environment variables for API keys. Configure HBC_LLM_API_KEY in your deployment.
-						</p>
-
-						<div class="space-y-2">
-							<label for="litellm-model" class="block text-xs text-neutral-400">Model</label>
-							<input
-								id="litellm-model"
-								type="text"
-								bind:value={editingConfig.litellm.model}
-								class="input w-full"
-								placeholder="gpt-4o"
-							/>
-						</div>
-					{:else}
-						<p class="text-xs text-neutral-500">Enable to configure LiteLLM settings</p>
-					{/if}
-				</div>
 			{/if}
 
 			<!-- Test Result -->
@@ -584,4 +588,4 @@
 			</div>
 		</div>
 	{/if}
-</section>
+</CollapsibleSection>

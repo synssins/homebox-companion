@@ -130,10 +130,26 @@ export type ScanStatus =
 	| 'capturing' // Adding/configuring images
 	| 'analyzing' // AI processing (async)
 	| 'partial_analysis' // Analysis complete with some failures
+	| 'grouping' // Adjusting AI-suggested image groups (desktop only)
 	| 'reviewing' // Editing detected items
 	| 'confirming' // Summary before submit
 	| 'submitting' // Creating items in Homebox
 	| 'complete'; // Success
+
+/** Analysis mode - how images should be processed */
+export type AnalysisMode =
+	| 'quick' // Each image analyzed separately (default)
+	| 'grouped'; // All images sent together, AI groups them automatically
+
+/** Image group from grouped detection or manual grouping */
+export interface ImageGroup {
+	/** Unique ID for this group */
+	id: string;
+	/** Detected item info (may be partial before confirmation) */
+	item: DetectedItem | null;
+	/** Indices of images in this group (from captured images array) */
+	imageIndices: number[];
+}
 
 /** Status of individual item submission */
 export type ItemSubmissionStatus =
@@ -175,15 +191,22 @@ export interface ScanState {
 	parentItemName: string | null;
 	// Capture
 	images: CapturedImage[];
+	// Analysis mode
+	analysisMode: AnalysisMode;
 	// Analysis
 	analysisProgress: Progress | null;
 	/** Per-image analysis status for UI feedback */
 	imageStatuses: Record<number, ImageAnalysisStatus>;
+	// Grouped detection
+	/** Image groups from grouped detection (only used in grouped mode) */
+	imageGroups: ImageGroup[];
 	// Review
 	detectedItems: ReviewItem[];
 	currentReviewIndex: number;
 	/** Potential duplicates detected (items that match existing serial numbers) */
 	duplicateMatches: DuplicateMatch[];
+	/** Items marked for update instead of create (user chose "Update Existing") */
+	updateDecisions: UpdateDecision[];
 	// Confirmation
 	confirmedItems: ConfirmedItem[];
 	// Submission
@@ -194,6 +217,8 @@ export interface ScanState {
 	lastSubmissionResult: SubmissionResult | null;
 	/** Error messages from the last submission attempt (for displaying specific failure reasons) */
 	submissionErrors: string[];
+	/** Token usage from last AI analysis (for display when enabled) */
+	lastTokenUsage: TokenUsage | null;
 	// Error handling
 	error: string | null;
 }
@@ -236,6 +261,14 @@ export interface MergeItem extends ItemCore, ItemExtended {}
 // API TYPES - Responses
 // =============================================================================
 
+/** Token usage statistics from LLM call */
+export interface TokenUsage {
+	prompt_tokens: number;
+	completion_tokens: number;
+	total_tokens: number;
+	provider: string;
+}
+
 /** Compressed image from backend */
 export interface CompressedImage {
 	data: string; // Base64-encoded image
@@ -247,6 +280,7 @@ export interface DetectionResponse {
 	items: DetectedItem[];
 	message: string;
 	compressed_images: CompressedImage[];
+	usage?: TokenUsage | null;
 }
 
 /** Detected item from AI (same as ItemCore + ItemExtended) */
@@ -261,6 +295,7 @@ export interface BatchDetectionResult {
 	success: boolean;
 	items: DetectedItem[];
 	error?: string | null;
+	usage?: TokenUsage | null;
 }
 
 /** Response from batch detection */
@@ -270,6 +305,7 @@ export interface BatchDetectionResponse {
 	successful_images: number;
 	failed_images: number;
 	message: string;
+	total_usage?: TokenUsage | null;
 }
 
 /** Response from grouped/auto-group detection */
@@ -279,6 +315,7 @@ export interface GroupedDetectionResponse {
 	/** Total number of images analyzed */
 	total_images: number;
 	message: string;
+	usage?: TokenUsage | null;
 }
 
 /** Response from advanced analysis */
@@ -354,6 +391,8 @@ export interface ExistingItemInfo {
 	serial_number: string;
 	location_id?: string | null;
 	location_name?: string | null;
+	manufacturer?: string | null;
+	model_number?: string | null;
 }
 
 /** A match between a new item and an existing item */
@@ -362,8 +401,14 @@ export interface DuplicateMatch {
 	item_index: number;
 	/** Name of the new item */
 	item_name: string;
-	/** The matching serial number (normalized to uppercase) */
-	serial_number: string;
+	/** How the duplicate was detected: 'serial_number', 'manufacturer_model', or 'fuzzy_name' */
+	match_type: string;
+	/** The value that matched (serial, manufacturer+model key, or similar name) */
+	match_value: string;
+	/** Confidence level: 'high', 'medium-high', 'medium', or 'low' */
+	confidence: string;
+	/** Similarity score (1.0 for exact matches, 0.0-1.0 for fuzzy name matches) */
+	similarity_score: number;
 	/** The existing item that matches */
 	existing_item: ExistingItemInfo;
 }
@@ -403,6 +448,53 @@ export interface DuplicateIndexStatus {
 export interface DuplicateIndexRebuildResponse {
 	/** Updated index status after rebuild */
 	status: DuplicateIndexStatus;
+	/** Summary message */
+	message: string;
+}
+
+// =============================================================================
+// UPDATE EXISTING ITEM TYPES (Merge on duplicate)
+// =============================================================================
+
+/** Decision to update an existing item instead of creating new */
+export interface UpdateDecision {
+	/** Index of the item in detectedItems/confirmedItems */
+	itemIndex: number;
+	/** ID of the existing Homebox item to update */
+	targetItemId: string;
+	/** Name of the existing item (for display) */
+	targetItemName: string;
+	/** How the duplicate was detected */
+	matchType: string;
+	/** The field to exclude from update (the match cause) */
+	matchField: string;
+}
+
+/** Request to merge new data into an existing item */
+export interface MergeItemRequest {
+	name?: string | null;
+	description?: string | null;
+	manufacturer?: string | null;
+	model_number?: string | null;
+	serial_number?: string | null;
+	purchase_price?: number | null;
+	purchase_from?: string | null;
+	notes?: string | null;
+	label_ids?: string[] | null;
+	/** Field to never update (the match cause): 'serial_number', 'manufacturer_model', 'name' */
+	exclude_field?: string | null;
+}
+
+/** Response from merge operation */
+export interface MergeItemResponse {
+	/** ID of the updated item */
+	id: string;
+	/** Name of the updated item */
+	name: string;
+	/** List of field names that were updated */
+	fields_updated: string[];
+	/** List of field names that were skipped (already had values or excluded) */
+	fields_skipped: string[];
 	/** Summary message */
 	message: string;
 }

@@ -42,6 +42,8 @@ class ExistingItemInfo(BaseModel):
     serial_number: str
     location_id: str | None = None
     location_name: str | None = None
+    manufacturer: str | None = None
+    model_number: str | None = None
 
 
 class DuplicateMatch(BaseModel):
@@ -53,8 +55,17 @@ class DuplicateMatch(BaseModel):
     item_name: str
     """Name of the new item."""
 
-    serial_number: str
-    """The matching serial number (normalized to uppercase)."""
+    match_type: str
+    """How the duplicate was detected: 'serial_number', 'manufacturer_model', or 'fuzzy_name'."""
+
+    match_value: str
+    """The value that matched (serial, manufacturer+model key, or similar name)."""
+
+    confidence: str
+    """Confidence level: 'high', 'medium-high', 'medium', or 'low'."""
+
+    similarity_score: float = 1.0
+    """Similarity score (1.0 for exact matches, 0.0-1.0 for fuzzy name matches)."""
 
     existing_item: ExistingItemInfo
     """The existing item that matches."""
@@ -100,6 +111,9 @@ class DuplicateIndexStatus(BaseModel):
     items_with_serials: int
     """Number of items with serial numbers in the index."""
 
+    items_with_model: int = 0
+    """Number of items with manufacturer+model in the index."""
+
     highest_asset_id: int
     """Highest asset ID seen (used for differential updates)."""
 
@@ -112,6 +126,55 @@ class DuplicateIndexRebuildResponse(BaseModel):
 
     status: DuplicateIndexStatus
     """Updated index status after rebuild."""
+
+    message: str
+    """Summary message."""
+
+
+# =============================================================================
+# MERGE ITEM SCHEMAS (Update existing item on duplicate)
+# =============================================================================
+
+
+class MergeItemRequest(BaseModel):
+    """Request to merge new data into an existing item.
+
+    Only empty fields on the existing item will be filled (additive merge).
+    Fields that already have values are preserved.
+    The exclude_field prevents updating the field that caused the duplicate match.
+    """
+
+    name: str | None = None
+    description: str | None = None
+    manufacturer: str | None = None
+    model_number: str | None = None
+    serial_number: str | None = None
+    purchase_price: float | None = None
+    purchase_from: str | None = None
+    notes: str | None = None
+    label_ids: list[str] | None = None
+
+    exclude_field: str | None = None
+    """Field to never update (the match cause).
+
+    Values: 'serial_number', 'manufacturer_model' (excludes both), 'name'
+    """
+
+
+class MergeItemResponse(BaseModel):
+    """Response from merge operation."""
+
+    id: str
+    """ID of the updated item."""
+
+    name: str
+    """Name of the updated item."""
+
+    fields_updated: list[str]
+    """List of field names that were updated."""
+
+    fields_skipped: list[str]
+    """List of field names that were skipped (already had values or excluded)."""
 
     message: str
     """Summary message."""

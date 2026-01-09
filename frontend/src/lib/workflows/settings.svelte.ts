@@ -40,6 +40,7 @@ import {
 	type AppPreferencesResponse,
 	type AppPreferencesInput,
 } from '$lib/api/appPreferences';
+import { clearEnrichmentCache } from '$lib/api/enrichment';
 import type { DuplicateIndexStatus } from '$lib/types';
 
 // =============================================================================
@@ -236,12 +237,26 @@ class SettingsService {
 	duplicateIndexMessageType = $state<'success' | 'error' | null>(null);
 
 	// =========================================================================
+	// TOKEN USAGE DISPLAY STATE
+	// =========================================================================
+
+	showTokenUsage = $state(false);
+
+	// =========================================================================
 	// APP PREFERENCES STATE (Connection settings, etc.)
 	// =========================================================================
 
 	appPreferences = $state<AppPreferencesResponse | null>(null);
 	showConnectionSettings = $state(false);
 	connectionSettingsSaveState = $state<'idle' | 'saving' | 'success' | 'error'>('idle');
+
+	// =========================================================================
+	// ENRICHMENT STATE
+	// =========================================================================
+
+	enrichmentCacheClearing = $state(false);
+	enrichmentCacheMessage = $state<string | null>(null);
+	enrichmentCacheMessageType = $state<'success' | 'error' | null>(null);
 
 	// Track cleanup timeouts
 	private _timeoutIds: number[] = [];
@@ -808,6 +823,14 @@ class SettingsService {
 		log.info(`Duplicate detection ${enabled ? 'enabled' : 'disabled'}`);
 	}
 
+	/**
+	 * Toggle token usage display setting.
+	 */
+	setShowTokenUsage(enabled: boolean): void {
+		this.showTokenUsage = enabled;
+		log.info(`Token usage display ${enabled ? 'enabled' : 'disabled'}`);
+	}
+
 	// =========================================================================
 	// APP PREFERENCES (Connection Settings)
 	// =========================================================================
@@ -828,6 +851,8 @@ class SettingsService {
 			this.appPreferences = await getAppPreferences();
 			// Sync duplicate detection enabled state
 			this.duplicateDetectionEnabled = this.appPreferences.duplicate_detection_enabled;
+			// Sync token usage display state
+			this.showTokenUsage = this.appPreferences.show_token_usage;
 			this.showConnectionSettings = true;
 		} catch (error) {
 			log.error('Failed to load app preferences:', error);
@@ -848,6 +873,8 @@ class SettingsService {
 			this.appPreferences = await updateAppPreferences(prefs);
 			// Sync duplicate detection enabled state
 			this.duplicateDetectionEnabled = this.appPreferences.duplicate_detection_enabled;
+			// Sync token usage display state
+			this.showTokenUsage = this.appPreferences.show_token_usage;
 			this.connectionSettingsSaveState = 'success';
 
 			this._scheduleTimeout(() => {
@@ -861,6 +888,35 @@ class SettingsService {
 			this._scheduleTimeout(() => {
 				this.connectionSettingsSaveState = 'idle';
 			}, 3000);
+		}
+	}
+
+	// =========================================================================
+	// ENRICHMENT
+	// =========================================================================
+
+	/**
+	 * Clear the enrichment cache.
+	 */
+	async clearEnrichmentCache(): Promise<void> {
+		this.enrichmentCacheClearing = true;
+		this.enrichmentCacheMessage = null;
+
+		try {
+			const result = await clearEnrichmentCache();
+			this.enrichmentCacheMessage = result.message;
+			this.enrichmentCacheMessageType = 'success';
+
+			this._scheduleTimeout(() => {
+				this.enrichmentCacheMessage = null;
+				this.enrichmentCacheMessageType = null;
+			}, 5000);
+		} catch (error) {
+			log.error('Failed to clear enrichment cache:', error);
+			this.enrichmentCacheMessage = error instanceof Error ? error.message : 'Failed to clear cache';
+			this.enrichmentCacheMessageType = 'error';
+		} finally {
+			this.enrichmentCacheClearing = false;
 		}
 	}
 
@@ -979,10 +1035,18 @@ class SettingsService {
 		this.duplicateIndexMessage = null;
 		this.duplicateIndexMessageType = null;
 
+		// Token usage display state
+		this.showTokenUsage = false;
+
 		// App preferences state
 		this.appPreferences = null;
 		this.showConnectionSettings = false;
 		this.connectionSettingsSaveState = 'idle';
+
+		// Enrichment state
+		this.enrichmentCacheClearing = false;
+		this.enrichmentCacheMessage = null;
+		this.enrichmentCacheMessageType = null;
 
 		this.isLoading = {
 			config: true,

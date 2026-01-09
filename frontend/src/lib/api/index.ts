@@ -103,10 +103,26 @@ export {
 	type OllamaConfigData,
 	type OpenAIConfigData,
 	type AnthropicConfigData,
-	type LiteLLMConfigData,
 	type ProviderInfo,
 	type TestConnectionResponse,
 } from './aiConfig';
+
+// Re-export Enrichment APIs
+export {
+	enrichProduct,
+	clearEnrichmentCache,
+	type EnrichmentRequest,
+	type EnrichmentResponse,
+	type ClearCacheResponse as EnrichmentClearCacheResponse,
+} from './enrichment';
+
+// Re-export App Preferences APIs
+export {
+	getAppPreferences,
+	updateAppPreferences,
+	type AppPreferencesResponse,
+	type AppPreferencesInput,
+} from './appPreferences';
 
 // Re-export types from vision for convenience
 export type { DetectOptions, BatchDetectOptions, GroupedDetectOptions } from './vision';
